@@ -1,0 +1,154 @@
+"""CLI 参数解析与时间窗计算。
+
+时间窗语义：对外是闭区间（两端都含），内部用半开区间 [since, until) 实现，
+因为 git log --until 与 GraphQL 的边界处理都更适合半开区间。
+"""
+import argparse
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Optional
+
+from dateutil.relativedelta import relativedelta
+
+DEFAULT_EXCLUDE_PATHS = [
+    "*.lock",
+    "*-lock.json",
+    "package-lock.json",
+    "poetry.lock",
+    "vendor/**",
+    "third_party/**",
+    "thirdparty/**",
+    "*.min.js",
+    "*.min.css",
+    "*.svg",
+    "*.pdf",
+    # 科学计算仓库常见的大体积数据文件
+    "*.npy",
+    "*.npz",
+    "*.h5",
+    "*.hdf5",
+    "*.cif",
+    "*.pdb",
+    "*.xyz",
+]
+
+
+def _parse_day(s: str, label: str) -> date:
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} 日期格式必须为 YYYY-MM-DD，收到 {s!r}"
+        ) from exc
+
+
+def resolve_window(
+    since: Optional[str],
+    until: Optional[str],
+    months: Optional[int],
+    today: date,
+) -> tuple[datetime, datetime]:
+    """把三种时间写法归一成 UTC 半开区间 [since_dt, until_dt)。
+
+    today 作为参数传入而非内部取 now()，使测试可复现。
+    """
+    if since is not None and months is not None:
+        raise ValueError("--since 与 --months 互斥，只能给一个")
+
+    if since is not None:
+        since_day = _parse_day(since, "--since")
+    elif months is not None:
+        if months <= 0:
+            raise ValueError("--months 必须为正整数")
+        # relativedelta 自动处理月末回退：3-31 减一月 → 2-28/29
+        since_day = today - relativedelta(months=months)
+    else:
+        since_day = today - relativedelta(years=1)
+
+    until_day = _parse_day(until, "--until") if until is not None else today
+
+    if since_day > until_day:
+        raise ValueError(f"起始日期 {since_day} 晚于结束日期 {until_day}")
+
+    since_dt = datetime.combine(since_day, time.min, tzinfo=timezone.utc)
+    # 闭区间语义：含 until_day 全天，故上界取次日零点
+    until_dt = datetime.combine(
+        until_day + timedelta(days=1), time.min, tzinfo=timezone.utc
+    )
+    return since_dt, until_dt
+
+
+@dataclass
+class Config:
+    org: str
+    since: datetime
+    until: datetime
+    include_forks: str
+    max_repo_size: int
+    repos: list = field(default_factory=list)
+    count_lines: bool = False
+    exclude_paths: list = field(default_factory=list)
+    no_fetch: bool = False
+    refresh: bool = False
+    include_bots: bool = False
+    cache_dir: str = "./.cache"
+    out_dir: str = "./output"
+    fmt: str = "all"
+    jobs: int = 4
+    verbose: bool = False
+
+
+def parse_args(argv: list, today: Optional[date] = None) -> Config:
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+
+    p = argparse.ArgumentParser(
+        prog="python -m contributors",
+        description="爬取 GitHub 组织的贡献者名单，用于感谢与表彰",
+    )
+    p.add_argument("--org", default="deepmodeling", help="目标组织")
+    p.add_argument("--since", help="起始日期 YYYY-MM-DD，含当天；默认一年前")
+    p.add_argument("--until", help="结束日期 YYYY-MM-DD，含当天；默认今天")
+    p.add_argument("--months", type=int, help="便捷写法，与 --since 互斥")
+    p.add_argument(
+        "--include-forks", choices=["all", "self", "none"], default="all"
+    )
+    p.add_argument("--max-repo-size", type=int, default=2048, help="MB")
+    p.add_argument("--repos", default="", help="只跑指定仓库，逗号分隔")
+    p.add_argument("--count-lines", action="store_true")
+    p.add_argument(
+        "--exclude-paths", default="", help="行数统计额外排除模式，逗号分隔"
+    )
+    p.add_argument("--no-fetch", action="store_true", help="零网络，纯本地缓存")
+    p.add_argument("--refresh", action="store_true", help="强制重新 fetch")
+    p.add_argument("--include-bots", action="store_true")
+    p.add_argument("--cache-dir", default="./.cache")
+    p.add_argument("--out-dir", default="./output")
+    p.add_argument(
+        "--format", dest="fmt", choices=["csv", "md", "json", "all"], default="all"
+    )
+    p.add_argument("--jobs", type=int, default=4)
+    p.add_argument("--verbose", action="store_true")
+
+    a = p.parse_args(argv)
+    since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
+
+    extra = [s.strip() for s in a.exclude_paths.split(",") if s.strip()]
+    return Config(
+        org=a.org,
+        since=since_dt,
+        until=until_dt,
+        include_forks=a.include_forks,
+        max_repo_size=a.max_repo_size,
+        repos=[s.strip() for s in a.repos.split(",") if s.strip()],
+        count_lines=a.count_lines,
+        exclude_paths=DEFAULT_EXCLUDE_PATHS + extra,
+        no_fetch=a.no_fetch,
+        refresh=a.refresh,
+        include_bots=a.include_bots,
+        cache_dir=a.cache_dir,
+        out_dir=a.out_dir,
+        fmt=a.fmt,
+        jobs=a.jobs,
+        verbose=a.verbose,
+    )
