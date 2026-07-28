@@ -144,3 +144,264 @@ def test_filter_repos_returns_kept_and_reasons():
     assert [r.name for r in kept] == ["dpdata"]
     assert set(skipped) == {"lammps", "sciencepedia"}
     assert all(isinstance(v, str) and v for v in skipped.values())
+
+
+# --- fetch_repos ---
+
+@pytest.mark.parametrize("use_responses", [True])
+def test_fetch_repos_single_page(use_responses):
+    """Parse single page of repos correctly."""
+    import responses
+    from contributors.repos import fetch_repos
+
+    @responses.activate
+    def run():
+        # First page returns 2 repos
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[
+                {
+                    "name": "dpdata",
+                    "default_branch": "main",
+                    "size": 2048,  # KB
+                    "pushed_at": "2026-07-01T10:00:00Z",
+                    "fork": False,
+                    "archived": False,
+                },
+                {
+                    "name": "DeePMD-kit",
+                    "default_branch": "master",
+                    "size": 4096,  # KB
+                    "pushed_at": "2026-07-02T10:00:00Z",
+                    "fork": False,
+                    "archived": False,
+                },
+            ],
+            status=200,
+            match_querystring=False,
+        )
+        # Second page returns empty to stop pagination
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[],
+            status=200,
+            match_querystring=False,
+        )
+        repos = fetch_repos("deepmodeling", "fake_token")
+        assert len(repos) == 2
+        assert repos[0].name == "dpdata"
+        assert repos[0].default_branch == "main"
+        assert repos[0].size_mb == 2.0  # 2048 KB / 1024
+        assert repos[0].pushed_at == "2026-07-01T10:00:00Z"
+        assert repos[0].is_fork is False
+        assert repos[0].archived is False
+        assert repos[1].name == "DeePMD-kit"
+        assert repos[1].default_branch == "master"
+        assert repos[1].size_mb == 4.0
+
+    run()
+
+
+@pytest.mark.parametrize("use_responses", [True])
+def test_fetch_repos_pagination(use_responses):
+    """Correctly handle pagination across multiple pages."""
+    import responses
+    from contributors.repos import fetch_repos
+
+    @responses.activate
+    def run():
+        # First page: 100 repos
+        first_page = [
+            {
+                "name": f"repo-{i}",
+                "default_branch": "main",
+                "size": 1024,
+                "pushed_at": "2026-07-01T10:00:00Z",
+                "fork": False,
+                "archived": False,
+            }
+            for i in range(100)
+        ]
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=first_page,
+            status=200,
+            match_querystring=False,
+        )
+
+        # Second page: 3 repos
+        second_page = [
+            {
+                "name": f"repo-{i}",
+                "default_branch": "main",
+                "size": 1024,
+                "pushed_at": "2026-07-01T10:00:00Z",
+                "fork": False,
+                "archived": False,
+            }
+            for i in range(100, 103)
+        ]
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=second_page,
+            status=200,
+            match_querystring=False,
+        )
+
+        # Third page: empty
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[],
+            status=200,
+            match_querystring=False,
+        )
+
+        repos = fetch_repos("deepmodeling", "fake_token")
+        assert len(repos) == 103
+
+    run()
+
+
+@pytest.mark.parametrize("use_responses", [True])
+def test_fetch_repos_fork_parent_lookup(use_responses):
+    """Fetch parent info for forks when not in list endpoint."""
+    import responses
+    from contributors.repos import fetch_repos
+
+    @responses.activate
+    def run():
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[
+                {
+                    "name": "fork-repo",
+                    "default_branch": "main",
+                    "size": 1024,
+                    "pushed_at": "2026-07-01T10:00:00Z",
+                    "fork": True,
+                    "archived": False,
+                    "url": "https://api.github.com/repos/deepmodeling/fork-repo",
+                    # parent not in list endpoint
+                },
+            ],
+            status=200,
+            match_querystring=False,
+        )
+
+        # Mock the detailed repo endpoint
+        responses.add(
+            responses.GET,
+            "https://api.github.com/repos/deepmodeling/fork-repo",
+            json={
+                "name": "fork-repo",
+                "fork": True,
+                "parent": {
+                    "full_name": "upstream/repo",
+                },
+            },
+            status=200,
+        )
+
+        # Second page: empty (to stop pagination)
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[],
+            status=200,
+            match_querystring=False,
+        )
+
+        repos = fetch_repos("deepmodeling", "fake_token")
+        assert len(repos) == 1
+        assert repos[0].name == "fork-repo"
+        assert repos[0].is_fork is True
+        assert repos[0].upstream == "upstream/repo"
+        assert repos[0].upstream_family == "external"
+
+    run()
+
+
+@pytest.mark.parametrize("use_responses", [True])
+def test_fetch_repos_missing_fields_use_defaults(use_responses):
+    """Fallback defaults for missing fields."""
+    import responses
+    from contributors.repos import fetch_repos
+
+    @responses.activate
+    def run():
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[
+                {
+                    "name": "minimal-repo",
+                    # no default_branch
+                    # no size
+                    # no pushed_at
+                    "fork": False,
+                    "archived": False,
+                },
+            ],
+            status=200,
+            match_querystring=False,
+        )
+
+        # Second page: empty
+        responses.add(
+            responses.GET,
+            "https://api.github.com/orgs/deepmodeling/repos",
+            json=[],
+            status=200,
+            match_querystring=False,
+        )
+
+        repos = fetch_repos("deepmodeling", "fake_token")
+        assert len(repos) == 1
+        assert repos[0].default_branch == "main"
+        assert repos[0].size_mb == 0.0
+        assert repos[0].pushed_at == "1970-01-01T00:00:00Z"
+
+    run()
+
+
+def test_fetch_repos_max_pages_limit(capsys):
+    """Pagination stops at MAX_PAGES and prints warning."""
+    import responses
+    from contributors.repos import fetch_repos, MAX_PAGES
+
+    @responses.activate
+    def run():
+        # Mock MAX_PAGES + 1 pages, all with 1 repo to keep it simple
+        for page_num in range(1, MAX_PAGES + 2):
+            responses.add(
+                responses.GET,
+                "https://api.github.com/orgs/deepmodeling/repos",
+                json=[
+                    {
+                        "name": f"repo-page-{page_num}",
+                        "default_branch": "main",
+                        "size": 1024,
+                        "pushed_at": "2026-07-01T10:00:00Z",
+                        "fork": False,
+                        "archived": False,
+                    }
+                ],
+                status=200,
+                match_querystring=False,
+            )
+
+        repos = fetch_repos("deepmodeling", "fake_token")
+        # Should have exactly MAX_PAGES worth of repos (one per page)
+        assert len(repos) == MAX_PAGES
+        # Check that warning was printed
+        captured = capsys.readouterr()
+        assert "警告" in captured.err
+        assert str(MAX_PAGES) in captured.err
+
+    run()

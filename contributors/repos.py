@@ -5,6 +5,7 @@ fork 分类依据 spec 第 2.1 节的实测结论：
 - external：真正的外部项目，全量统计会让上游开发者淹没本社区贡献者
 - tooling：CI 流程工具 fork，上游作者列入表彰名单无意义
 """
+import sys
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +31,9 @@ TOOLING_UPSTREAMS = {
     "deepmd-kit-recipes/deepmd-kit-recipes",
     "conda-forge/staged-recipes",
 }
+
+# 分页上限：100 页 × 100 个/页 = 1 万个仓库，远超任何真实组织
+MAX_PAGES = 100
 
 
 def classify_upstream(upstream: Optional[str]) -> Optional[str]:
@@ -96,7 +100,7 @@ def fetch_repos(org: str, token: str) -> list:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    while True:
+    while page <= MAX_PAGES:
         resp = requests.get(
             f"https://api.github.com/orgs/{org}/repos",
             params={"per_page": 100, "page": page, "type": "all"},
@@ -126,4 +130,10 @@ def fetch_repos(org: str, token: str) -> list:
                 archived=bool(j.get("archived")),
             ))
         page += 1
+    if page > MAX_PAGES:
+        print(
+            f"警告：仓库列表可能被截断。已达到 {MAX_PAGES} 页的上限。"
+            f"组织 {org} 可能拥有超过 {MAX_PAGES * 100} 个仓库。",
+            file=sys.stderr,
+        )
     return out
