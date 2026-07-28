@@ -73,6 +73,25 @@ def test_discard_on_missing_repo_does_not_raise(tmp_path):
     cm.discard("never-existed")
 
 
+def test_discard_removes_readonly_files(tmp_path):
+    """git 的 pack 文件带只读位，Windows 上 rmtree 会失败。
+
+    实测：用 ignore_errors=True 时错误被静默吞掉，留下含 objects 的
+    空壳目录，导致后续 clone 报 destination already exists。
+    """
+    import os
+    import stat
+
+    cm = CacheManager(str(tmp_path))
+    d = make_bare(cm)
+    pack = d / "objects" / "pack-abc.pack"
+    pack.write_text("fake pack")
+    os.chmod(pack, stat.S_IREAD)
+
+    cm.discard("dpdata")
+    assert d.exists() is False, "只读文件导致缓存目录残留，clone 会失败"
+
+
 # --- 增量判断 ---
 
 def test_needs_fetch_true_when_never_cloned(tmp_path):

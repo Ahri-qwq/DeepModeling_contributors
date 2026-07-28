@@ -4,7 +4,9 @@
 API 缓存按天，因为 GraphQL 查的是当前状态。
 """
 import json
+import os
 import shutil
+import stat
 from pathlib import Path
 
 from .models import RepoInfo
@@ -51,7 +53,22 @@ class CacheManager:
         return not self.is_cloned(name)
 
     def discard(self, name: str) -> None:
-        shutil.rmtree(self.repo_path(name), ignore_errors=True)
+        """删除某仓库的缓存。
+
+        不能用 ignore_errors=True：Windows 上 git 的 pack 文件带只读位，
+        rmtree 会部分失败而错误被静默吞掉，留下一个含 objects 的空壳目录，
+        使后续 clone 报 "destination path already exists"（实测确认）。
+        故用 onexc 回调清除只读位后重试。
+        """
+        path = self.repo_path(name)
+        if not path.exists():
+            return
+
+        def _clear_readonly(func, target, _exc):
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+
+        shutil.rmtree(path, onexc=_clear_readonly)
 
     def needs_fetch(self, repo: RepoInfo, refresh: bool, no_fetch: bool) -> bool:
         # --no-fetch 优先于 --refresh：用户明确要求零网络时不碰网络

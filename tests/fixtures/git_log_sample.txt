@@ -1,0 +1,15 @@
+C|aef01ec67b9bef6b4d604dd854e91e7436c52e38|pre-commit-ci[bot]|66853113+pre-commit-ci[bot]@users.noreply.github.com|2026-07-27T20:30:41Z
+
+1	1	.pre-commit-config.yaml
+C|3ccd131d8ea3306ab1bb7593cd4d3b67b300c19a|njzjz-bot|njzjz.bot@gmail.com|2026-07-27T19:10:41+08:00
+
+37	2	dpdata/plugins/cp2k.py
+68	0	tests/test_cp2k_aimd_missing_inputs.py
+C|f9885d217bc6d224c3696fe34d4cdf9a48650de9|Jinzhe Zeng|njzjz@example.com|2026-07-20T17:31:39+08:00
+
+4	1	dpdata/formats/vasp/outcar.py
+-	-	docs/logo.png
+120	0	package-lock.json
+C|acaef94fec2878700ab034eab937efcff4304505|Jinzhe Zeng|Njzjz@Example.com|2026-01-15T16:52:31Z
+
+312	0	tests/test_serialization.py
