@@ -50,7 +50,7 @@ def parse_noreply_login(email: str) -> Optional[str]:
 def is_bot(login: Optional[str], name: str = "", email: str = "") -> bool:
     """只认 [bot] 后缀与显式黑名单，禁止子串匹配。
 
-    注意：意刻意不检查 email 参数。邮箱本地部分会有大量合法用户名，
+    注意：刻意不检查 email 参数。邮箱本地部分会有大量合法用户名，
     如 renovate@company.com（renovate 是某人的用户名，不是 bot）、
     devops+renovate@company.com，在邮箱中出现黑名单词不代表是 bot。
     bot 身份必须明确来自 login（GitHub 账号）或 name 字段。

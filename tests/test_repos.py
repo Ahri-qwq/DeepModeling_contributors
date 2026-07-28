@@ -179,7 +179,6 @@ def test_fetch_repos_single_page(use_responses):
                 },
             ],
             status=200,
-            match_querystring=False,
         )
         # Second page returns empty to stop pagination
         responses.add(
@@ -187,7 +186,6 @@ def test_fetch_repos_single_page(use_responses):
             "https://api.github.com/orgs/deepmodeling/repos",
             json=[],
             status=200,
-            match_querystring=False,
         )
         repos = fetch_repos("deepmodeling", "fake_token")
         assert len(repos) == 2
@@ -229,7 +227,6 @@ def test_fetch_repos_pagination(use_responses):
             "https://api.github.com/orgs/deepmodeling/repos",
             json=first_page,
             status=200,
-            match_querystring=False,
         )
 
         # Second page: 3 repos
@@ -249,7 +246,6 @@ def test_fetch_repos_pagination(use_responses):
             "https://api.github.com/orgs/deepmodeling/repos",
             json=second_page,
             status=200,
-            match_querystring=False,
         )
 
         # Third page: empty
@@ -258,7 +254,6 @@ def test_fetch_repos_pagination(use_responses):
             "https://api.github.com/orgs/deepmodeling/repos",
             json=[],
             status=200,
-            match_querystring=False,
         )
 
         repos = fetch_repos("deepmodeling", "fake_token")
@@ -291,7 +286,6 @@ def test_fetch_repos_fork_parent_lookup(use_responses):
                 },
             ],
             status=200,
-            match_querystring=False,
         )
 
         # Mock the detailed repo endpoint
@@ -314,7 +308,6 @@ def test_fetch_repos_fork_parent_lookup(use_responses):
             "https://api.github.com/orgs/deepmodeling/repos",
             json=[],
             status=200,
-            match_querystring=False,
         )
 
         repos = fetch_repos("deepmodeling", "fake_token")
@@ -349,7 +342,6 @@ def test_fetch_repos_missing_fields_use_defaults(use_responses):
                 },
             ],
             status=200,
-            match_querystring=False,
         )
 
         # Second page: empty
@@ -358,7 +350,6 @@ def test_fetch_repos_missing_fields_use_defaults(use_responses):
             "https://api.github.com/orgs/deepmodeling/repos",
             json=[],
             status=200,
-            match_querystring=False,
         )
 
         repos = fetch_repos("deepmodeling", "fake_token")
@@ -393,7 +384,6 @@ def test_fetch_repos_max_pages_limit(capsys):
                     }
                 ],
                 status=200,
-                match_querystring=False,
             )
 
         repos = fetch_repos("deepmodeling", "fake_token")
