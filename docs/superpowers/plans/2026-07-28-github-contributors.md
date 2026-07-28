@@ -870,8 +870,8 @@ def fetch_repos(org: str, token: str) -> list:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `pytest tests/test_repos.py -v`
-Expected: 26 passed
+Run: `python -m pytest tests/test_repos.py -v`
+Expected: 29 passed（19 个测试函数，其中 3 个 parametrize 展开为 16 个用例）
 
 - [ ] **Step 5: 提交**
 
@@ -1142,8 +1142,8 @@ class IdentityResolver:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `pytest tests/test_identity.py -v`
-Expected: 24 passed
+Run: `python -m pytest tests/test_identity.py -v`
+Expected: 23 passed（20 个测试函数，其中 1 个 parametrize 展开为 4 例）
 
 - [ ] **Step 5: 提交**
 
