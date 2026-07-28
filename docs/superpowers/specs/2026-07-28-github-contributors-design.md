@@ -379,3 +379,75 @@ Ctrl-C 时将已完成仓库的中间结果保存至 `.cache/progress.json`，�
 1. external 类 fork（一年窗口内仅 GPUMD 有数据）是否纳入表彰名单 —— 用户将与领导确认。设计已通过 `--include-forks` 与 `upstream_family` 列使该决策后置，无需重爬
 2. `sciencepedia`（17.6 GB）是否纳入 —— 默认被 `--max-repo-size 2048` 挡掉并打印警告，需要时用 `--max-repo-size 20000` 纳入
 3. 若 DeepModeling 内部已有贡献者名单或邮箱映射表，可作为身份归并的辅助输入以提升准确率
+
+## 11. 实施记录
+
+本节记录实现过程中的用户裁决与实测发现。原始过程记录在
+`.superpowers/sdd/2026-07-28-github-contributors/progress.md`，但该目录已被
+git 忽略、随时可能清除，故把有长期价值的内容固化在此。
+
+### 11.1 实施进度
+
+截至 2026-07-28，分支 `worktree-github-contributors`，测试 162 通过。
+
+| Task | 内容 | 提交 | 状态 |
+|---|---|---|---|
+| 1 | 项目骨架与共享数据模型 | b7c0734 | 完成 |
+| 2 | 时间窗与 CLI 参数解析 | e532ea7 | 完成 |
+| 3 | token 获取与 fork 三分类 | 71cad0e, 8d0222a | 完成 |
+| 4 | 身份归并与 bot 识别 | ec492ba, fd1ef88 | 完成 |
+| 5 | 缓存管理与增量判断 | 16f478f | 完成 |
+| 6 | git log 解析与 commit 统计 | 44a1001 | 完成 |
+| 7 | GraphQL 查询 PR/Issue/Review | — | 未开始 |
+| 8 | 三种格式输出 | — | 未开始 |
+| 9 | 主流程编排与集成测试 | — | 未开始 |
+
+已完成的是数据结构、参数解析、认证、仓库筛选、身份判定、缓存与 git 采集。
+尚未打通端到端，故当前还产不出名单：缺 API 侧采集、输出层与主流程。
+
+恢复方式：在仓库根目录开新会话，进入 `worktree-github-contributors` 分支，
+从本设计文档与 `docs/superpowers/plans/2026-07-28-github-contributors.md`
+的 Task 7 继续。计划文件中含 Task 7–9 的完整实现代码与测试。
+
+### 11.2 用户裁决
+
+| 议题 | 裁决 |
+|---|---|
+| fork 处理 | 纳入但标记，输出 `upstream_family` 与 `commits_not_in_upstream` 列，使口径可事后筛选而无需重爬 |
+| 时间窗写法 | 用显式日期（`--since 2025-07-28`）而非滑动的 `--months N`，使考核周期可复现；`--months` 保留为便捷写法 |
+| PR/Issue 口径 | 拆成 `pr_created`/`pr_merged`/`pr_reviewed` 与 `issue_created`/`issue_commented` 五列，因为「提 3 个 PR」与「评审 80 个 PR」是不同贡献画像 |
+| 输出格式 | CSV、Markdown、JSON 全要 |
+| 代码行数统计 | 默认关闭，需要时用 `--count-lines` 开启 |
+| bot 判定依据 | 只看 `login` 与 `name`，不查邮箱。保留 name 检查，因 login 缺失时 name 为 `dependabot[bot]` 的 bot 仍需被识别 |
+| 无邮箱贡献者 | 用姓名作后备归并键，并记入 `unmatched`，不得静默合并 |
+| git 层 token | 不传。目标仓库均为公开，匿名访问即可 |
+| 克隆策略 | 按 `--count-lines` 自动选择 blobless 或完整克隆 |
+| 分页上限 | 加 `MAX_PAGES` 防御并打印中文警告，不静默截断 |
+
+### 11.3 实测发现（推翻了设计中的若干假设）
+
+| 假设 | 实测结果 |
+|---|---|
+| deepmodeling 有 100+ 仓库 | 错，实为 67 个（其中 17 fork、2 archived） |
+| `git log --all` 会重复计数已合并分支 | 不会，按 SHA 天然去重（dpdata 473 条 = 473 唯一 SHA） |
+| `%aI` 返回 UTC | 错，返回作者本地时区（实测有 +08:00）。故时间过滤交给 git，不自行解析 |
+| 可逐用户查 `reviewed-by:` / `commenter:` | 不可行，约 100 人 × 67 仓库 = 数千请求会撞限额。改为按仓库分页并从节点读取，实测每页 cost 仅 1 |
+| `[bot]` 后缀足以识别机器人 | 不足。`njzjz-bot`、`pre-commit-ci`、`codecov` 均无该后缀，须配黑名单 |
+| 对 "bot" 子串匹配是安全的 | 不安全。`botelho`、`Botspot`、`bot50`、`BotBitmap` 是真实用户，会被误删出表彰名单 |
+| 邮箱本地部分可用于 bot 判定 | 不可用。实测真人「Zhang San」邮箱为 `renovate@theirdomain.com` 时被误判为 bot；`devops+renovate@company.com` 同样中招 |
+| `\x00` 可作 git log 字段分隔符 | Windows 不可用。`CreateProcess` 不允许参数含 NUL，必抛 `ValueError`。已改用 `\x1f` |
+| blobless 克隆可配合 `--numstat` | 冲突。blobless 库需逐个回取 blob，实测约 2 分钟/仓库；完整克隆仅 0.20 秒，体积 25MB vs 3.6MB |
+| `shutil.rmtree(ignore_errors=True)` 能删 git 缓存 | Windows 上不能。pack 文件带只读位，rmtree 部分失败且错误被吞，残留空壳目录使后续 clone 报 destination already exists。须用 `onexc` 回调清除只读位 |
+| `--cache-dir` 指向无效盘符会给出有用提示 | 不会。`Path("Z:/").parent == Path("Z:/")` 使上溯循环退出后仍访问不存在的根，抛裸的 `FileNotFoundError`。已转为带指引的 `CacheError` |
+
+一年窗口下另一项有用结论：`pushed_at` 早于窗口起点的仓库可直接跳过，
+连克隆都省掉。一年窗口下命中 9 个仓库、约 1.1 GB 无效克隆，其中 5 个正是
+需要业务裁决的 external fork —— 使该争议在默认窗口下大幅缩小。
+
+### 11.4 已知遗留
+
+| 项 | 说明 |
+|---|---|
+| `unknown:` 归并键 | 无邮箱且无姓名的多个贡献者仍共享同一键。已记入 `unmatched`，非静默丢弃；真实 git 历史几乎不出现此情形 |
+| `fetch_repos` 无重试 | 每个 fork 的上游详情查询无退避重试，遇瞬时故障会抛错。单仓库失败不影响整体（Task 9 的错误边界负责） |
+
