@@ -56,6 +56,24 @@ def test_none_login_is_not_bot_by_default():
     assert is_bot(None, "Someone", "a@b.com") is False
 
 
+def test_email_local_part_not_checked_against_blocklist():
+    # Fix 1：邮箱本地部分不应该被检查黑名单
+    # 真人"Zhang San"因邮箱 renovate@theirdomain.com 不应被误判为 bot
+    assert is_bot(None, "Zhang San", "renovate@theirdomain.com") is False
+    # 加号地址 devops+renovate@company.com 也不应该被检查
+    assert is_bot(None, "Someone", "devops+renovate@company.com") is False
+
+
+def test_blocklist_still_applies_to_login():
+    # 但 login 为黑名单项时仍应被判定为 bot
+    assert is_bot("renovate", "", "user@example.com") is True
+
+
+def test_name_bracket_bot_still_detected():
+    # name 中的 [bot] 后缀仍应被检测
+    assert is_bot(None, "dependabot[bot]", "user@example.com") is True
+
+
 # --- 邮箱归一化 ---
 
 def test_normalize_email_lowercases_and_strips():
@@ -116,3 +134,63 @@ def test_explicit_login_takes_priority_over_email_lookup():
 def test_login_merge_key_is_case_insensitive():
     r = IdentityResolver()
     assert r.merge_key("a@x.com", "Alice") == r.merge_key("b@y.com", "alice")
+
+
+def test_no_email_no_login_with_name_creates_name_key():
+    # Fix 2：无邮箱无 login 但有姓名时，应该生成基于姓名的键
+    r = IdentityResolver()
+    key = r.merge_key("", None, "Zhang San")
+    assert key == "name:zhang san"
+
+
+def test_no_email_with_different_names_creates_different_keys():
+    # 两个无邮箱但姓名不同的贡献者应有不同的键（不被误合并）
+    r = IdentityResolver()
+    key1 = r.merge_key("", None, "Alice")
+    key2 = r.merge_key("", None, "Bob")
+    assert key1 != key2
+    assert key1 == "name:alice"
+    assert key2 == "name:bob"
+
+
+def test_no_email_with_name_recorded_as_unmatched():
+    # 无邮箱贡献者应被记入 unmatched，包含其姓名的可读标记
+    r = IdentityResolver()
+    r.merge_key("", None, "Zhang San")
+    unmatched = r.unmatched_emails()
+    assert len(unmatched) == 1
+    # unmatched 中应该包含一个指示"无邮箱"且包含姓名的标记
+    marker = list(unmatched)[0]
+    assert "Zhang San" in marker or "zhang san" in marker
+
+
+def test_no_email_no_name_recorded_as_unmatched():
+    # 无邮箱无姓名也应被记入 unmatched（不能静默丢弃）
+    r = IdentityResolver()
+    key = r.merge_key("", None, "")
+    assert key.startswith("unknown:")
+    unmatched = r.unmatched_emails()
+    assert len(unmatched) == 1
+
+
+def test_same_name_multiple_times_share_key():
+    # 邮箱为空但姓名相同的两人应有相同的键（因为无从区分）
+    r = IdentityResolver()
+    key1 = r.merge_key("", None, "John Doe")
+    key2 = r.merge_key("", None, "John Doe")
+    assert key1 == key2
+
+
+def test_merge_key_with_email_login_and_name_email_takes_priority():
+    # 有邮箱时，邮箱和 login 优先于 name
+    r = IdentityResolver()
+    r.add_mapping("work@corp.com", "alice")
+    key = r.merge_key("work@corp.com", None, "Zhang San")
+    assert key == "login:alice"
+
+
+def test_merge_key_with_explicit_login_and_name_login_takes_priority():
+    # 显式 login 优先级最高，即使有 name 也不用
+    r = IdentityResolver()
+    key = r.merge_key("", "bob", "Zhang San")
+    assert key == "login:bob"
