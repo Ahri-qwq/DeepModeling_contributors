@@ -158,6 +158,68 @@ def merge_by_name(rows: list) -> list:
     return [r for r in rows if id(r) not in merged_away]
 
 
+UNMATCHED_COLUMNS = ["identity", "name", "commits", "repos",
+                     "pr_created", "issue_created", "guess"]
+
+
+def build_unmatched_report(rows: list, unmatched: set) -> list:
+    """生成待人工确认的身份清单，自带姓名与贡献量。
+
+    只输出邮箱的话管理员无从认人：看到 2050325993@qq.com 既不知是谁、
+    也不知该优先看哪几条。故从输出行提取姓名、提交数与所在仓库，
+    并按提交数降序 —— 提交多的更值得先认。
+
+    guess 列给出同名的已知账号作为线索。姓名完全相同的已由
+    merge_by_name 自动合并，所以这里出现的是姓名不同但可能同人的情况，
+    需要人工判断。
+    """
+    # 已知账号的姓名 -> login，供 guess 列提示
+    known: dict = {}
+    for r in rows:
+        if r.login and r.name.strip():
+            known.setdefault(" ".join(r.name.split()).lower(), set()).add(r.login)
+
+    agg: dict = {}
+    for r in rows:
+        if r.login:
+            continue
+        key = r.email or f"name:{r.name}"
+        a = agg.setdefault(key, {
+            "identity": r.email or "(git 未配置邮箱)",
+            "name": r.name, "commits": 0, "repos": set(),
+            "pr_created": 0, "issue_created": 0,
+        })
+        a["commits"] += r.commits
+        a["pr_created"] += r.pr_created
+        a["issue_created"] += r.issue_created
+        if r.repo:
+            a["repos"].add(r.repo)
+        if not a["name"]:
+            a["name"] = r.name
+
+    out = []
+    for a in agg.values():
+        hits = known.get(" ".join(a["name"].split()).lower(), set())
+        out.append({**a, "repos": ";".join(sorted(a["repos"])),
+                    "guess": ";".join(sorted(hits))})
+
+    # resolver 记录了但输出行中找不到的身份也要列出，绝不静默丢弃。
+    # 但已归并到某个 login 的邮箱要排除：它已有账号，不需人工确认
+    # （同一邮箱可能先以未知身份记入 unmatched，之后才由 API 补上映射）
+    resolved = {e for r in rows if r.login for e in r.email.split(";") if e}
+    seen = {a["identity"] for a in out}
+    for ident in sorted(unmatched):
+        if ident in seen or ident in resolved:
+            continue
+        label = ident if "@" in ident else "(git 未配置邮箱)"
+        if label in seen:
+            continue
+        out.append({"identity": ident, "name": "", "commits": 0, "repos": "",
+                    "pr_created": 0, "issue_created": 0, "guess": ""})
+
+    return sorted(out, key=lambda d: (-d["commits"], d["identity"]))
+
+
 def process_repo(repo, cm, cfg, client, resolver) -> tuple:
     """采集单仓库两侧数据并合并。不传 token：git 层用匿名访问公开仓库。"""
     clone_or_fetch(repo, cm, cfg)
@@ -244,8 +306,11 @@ def run(cfg, token: str) -> int:
     since_s, until_s = meta["window"]["since"], meta["window"]["until"]
     print(f"\n统计区间: {since_s} ~ {until_s}（UTC，含两端）")
     print(f"贡献者 {meta['contributors']} 人，输出目录 {out}")
-    if resolver.unmatched_emails():
-        print(f"注意：{len(resolver.unmatched_emails())} 个身份未能关联 "
+    # 用报告实际条数，而非 resolver 的原始邮箱数：后者含已归并到某个
+    # login 的邮箱，报告已排除，两处数字须一致，否则会让人以为漏了记录
+    pending = build_unmatched_report(rows, resolver.unmatched_emails())
+    if pending:
+        print(f"注意：{len(pending)} 个身份未能关联 "
               "GitHub 账号，见 unmatched.csv")
     if failures:
         print(f"注意：{len(failures)} 个仓库处理失败，见 run_meta.json")
@@ -272,8 +337,8 @@ def _write_outputs(rows, bots, resolver, cfg, out: Path) -> None:
     # 未归并身份与 bot 永远单独输出，不受 --format 影响：
     # 前者需人工确认，漏掉一个真实贡献者比多算一个严重
     _write_simple_csv(
-        out / "unmatched.csv", ["identity"],
-        [{"identity": e} for e in sorted(resolver.unmatched_emails())],
+        out / "unmatched.csv", UNMATCHED_COLUMNS,
+        build_unmatched_report(rows, resolver.unmatched_emails()),
     )
     write_csv(bots, out / "bots.csv", cfg)
 

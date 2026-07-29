@@ -378,3 +378,67 @@ def test_repo_list_is_cached_for_later_offline_runs(tiny_repo, monkeypatch):
     cfg = mk_cfg(tiny_repo)
     m.run(cfg, token="fake")
     assert CacheManager(cfg.cache_dir).load_repo_list() is not None
+
+
+# --- unmatched 报告需自带上下文 ---
+#
+# 原实现只输出一列邮箱，管理员看到 2050325993@qq.com 无从认人：
+# 缺姓名、缺提交量、缺所在仓库，必须与 summary.csv 对照才能查，
+# 且不知该优先看哪几条。改为从输出行提取，按提交数降序。
+
+def test_unmatched_report_includes_name_and_commits():
+    from contributors.main import build_unmatched_report
+    rows = [_row("", "Fei Yang", "2501213217@stu.pku.edu.cn", 60,
+                 repo="abacus-develop")]
+    rep = build_unmatched_report(rows, {"2501213217@stu.pku.edu.cn"})
+    assert len(rep) == 1
+    assert rep[0]["name"] == "Fei Yang"
+    assert rep[0]["commits"] == 60
+    assert rep[0]["repos"] == "abacus-develop"
+    assert rep[0]["identity"] == "2501213217@stu.pku.edu.cn"
+
+
+def test_unmatched_report_sorted_by_commits_desc():
+    from contributors.main import build_unmatched_report
+    rows = [_row("", "Low", "low@x.com", 1),
+            _row("", "High", "high@x.com", 60)]
+    rep = build_unmatched_report(rows, {"low@x.com", "high@x.com"})
+    assert [r["name"] for r in rep] == ["High", "Low"]
+
+
+def test_unmatched_report_aggregates_across_repos():
+    from contributors.main import build_unmatched_report
+    rows = [_row("", "Fei Yang", "f@x.com", 40, repo="r1"),
+            _row("", "Fei Yang", "f@x.com", 20, repo="r2")]
+    rep = build_unmatched_report(rows, {"f@x.com"})
+    assert len(rep) == 1
+    assert rep[0]["commits"] == 60
+    assert set(rep[0]["repos"].split(";")) == {"r1", "r2"}
+
+
+def test_unmatched_report_excludes_rows_with_login():
+    """已关联账号的行不该出现在待确认名单里。"""
+    from contributors.main import build_unmatched_report
+    rows = [_row("alice", "Alice", "a@x.com", 5),
+            _row("", "Bob", "b@x.com", 3)]
+    rep = build_unmatched_report(rows, {"a@x.com", "b@x.com"})
+    assert [r["name"] for r in rep] == ["Bob"]
+
+
+def test_unmatched_report_keeps_emailless_identity():
+    """git 未配邮箱的贡献者以姓名兜底，同样要能出现在报告里。"""
+    from contributors.main import build_unmatched_report
+    rows = [_row("", "a-006", "", 7)]
+    rep = build_unmatched_report(rows, {"<无邮箱> a-006"})
+    assert len(rep) == 1
+    assert rep[0]["name"] == "a-006"
+    assert rep[0]["identity"] == "(git 未配置邮箱)"
+
+
+def test_unmatched_report_lists_orphan_identities_without_rows():
+    """resolver 记录了但输出行里找不到的身份，仍要列出而非丢弃。"""
+    from contributors.main import build_unmatched_report
+    rep = build_unmatched_report([], {"ghost@nowhere.com"})
+    assert len(rep) == 1
+    assert rep[0]["identity"] == "ghost@nowhere.com"
+    assert rep[0]["commits"] == 0
