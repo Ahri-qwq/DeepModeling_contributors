@@ -442,3 +442,71 @@ def test_unmatched_report_lists_orphan_identities_without_rows():
     assert len(rep) == 1
     assert rep[0]["identity"] == "ghost@nowhere.com"
     assert rep[0]["commits"] == 0
+
+
+# --- fork 上游排除口径 -----------------------------------------------------
+#
+# 实测背景（deepmodeling/GPUMD，fork 自 brucefan1983/GPUMD）：窗口内 638 次
+# 提交全部为上游可达，count_upstream_excluded 正确返回空字典。但 build_rows
+# 用 upstream_counts.get(email, gs.commits) 兜底，把"上游可达故为 0"的人
+# 抬成了等于 commits——上游原作者 Zheyong Fan 显示 192/192，实际应为 0/192。
+# 该兜底只对非 fork 成立，fork 必须缺失即 0，否则 Q1 依赖的这列完全失效。
+
+def _fork_repo(name="GPUMD"):
+    from contributors.models import RepoInfo
+    return RepoInfo(name=name, default_branch="master", size_mb=1.0,
+                    pushed_at="2026-06-09T00:00:00Z", is_fork=True,
+                    upstream="brucefan1983/GPUMD",
+                    upstream_family="external", archived=False)
+
+
+def test_fork_missing_from_upstream_counts_means_zero(tmp_path):
+    """fork 里上游可达的提交必须记 0，不能兜底成 commits。"""
+    from contributors.main import build_rows
+    from contributors.models import GitStats
+    gs = GitStats(commits=192, emails={"brucenju@gmail.com"},
+                  names={"Zheyong Fan"})
+    rows, _ = build_rows(_fork_repo(), {"brucenju@gmail.com": gs}, {},
+                         IdentityResolver(), mk_cfg(tmp_path), {})
+    assert len(rows) == 1
+    assert rows[0].commits == 192
+    assert rows[0].commits_not_in_upstream == 0
+
+
+def test_fork_partial_upstream_counts_are_respected(tmp_path):
+    """部分提交独立于上游时，按 count_upstream_excluded 的实际值记。"""
+    from contributors.main import build_rows
+    from contributors.models import GitStats
+    gs = GitStats(commits=100, emails={"dev@x.com"}, names={"Dev"})
+    rows, _ = build_rows(_fork_repo(), {"dev@x.com": gs}, {},
+                         IdentityResolver(), mk_cfg(tmp_path),
+                         {"dev@x.com": 7})
+    assert rows[0].commits == 100
+    assert rows[0].commits_not_in_upstream == 7
+
+
+def test_non_fork_still_equals_commits(tmp_path):
+    """非 fork 没有上游概念，该列等于 commits，此行为不能被改坏。"""
+    from contributors.main import build_rows
+    from contributors.models import GitStats, RepoInfo
+    repo = RepoInfo(name="tiny", default_branch="main", size_mb=1.0,
+                    pushed_at="2026-06-09T00:00:00Z", is_fork=False,
+                    upstream=None, upstream_family=None, archived=False)
+    gs = GitStats(commits=42, emails={"a@x.com"}, names={"A"})
+    rows, _ = build_rows(repo, {"a@x.com": gs}, {},
+                         IdentityResolver(), mk_cfg(tmp_path), {})
+    assert rows[0].commits_not_in_upstream == 42
+
+
+def test_fork_upstream_compare_failure_degrades_to_commits(tmp_path):
+    """上游对比失败（None）要退化为 commits，不能与"全部上游可达"混淆。
+
+    空字典表示对比成功但无人独立于上游，应记 0；None 表示 fetch 失败、
+    无从判断，此时记 commits 更安全——宁可多算也不抹掉真实贡献。
+    """
+    from contributors.main import build_rows
+    from contributors.models import GitStats
+    gs = GitStats(commits=55, emails={"dev@x.com"}, names={"Dev"})
+    rows, _ = build_rows(_fork_repo(), {"dev@x.com": gs}, {},
+                         IdentityResolver(), mk_cfg(tmp_path), None)
+    assert rows[0].commits_not_in_upstream == 55

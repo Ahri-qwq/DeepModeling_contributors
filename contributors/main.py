@@ -42,6 +42,9 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
     返回 (正常行, bot 行)。同一人的多个邮箱在能解析出 login 时自动合并；
     解析不出时退化为按邮箱分行并记入 unmatched，绝不丢弃。
     """
+    # None 与空字典语义不同：None 表示上游对比失败或未做，无从判断；
+    # 空字典表示对比成功但无人独立于上游。前者退化为 commits，后者记 0。
+    upstream_unknown = upstream_counts is None
     upstream_counts = upstream_counts or {}
     buckets: dict = {}
 
@@ -63,8 +66,15 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
         b["names"].update(gs.names)
         if email:
             b["emails"].add(email)
-        # fork 场景下上游可达的提交不计入本社区贡献；非 fork 时等于 commits
-        b["up"] += upstream_counts.get(email, gs.commits)
+        # fork 场景下上游可达的提交不计入本社区贡献。缺失即 0：
+        # count_upstream_excluded 只列出上游不可达的人，实测
+        # deepmodeling/GPUMD 窗口内 638 次提交全部上游可达而返回空字典，
+        # 若在此兜底成 commits，上游原作者会被记成满额本社区贡献。
+        # 非 fork 无上游概念，或上游对比失败无从判断时，才等于 commits。
+        if repo.is_fork and repo.upstream and not upstream_unknown:
+            b["up"] += upstream_counts.get(email, 0)
+        else:
+            b["up"] += gs.commits
 
     # API 侧：以 login 为键。只提 issue、从未提交代码的人也是贡献者
     for login, ast in api_stats.items():
@@ -233,15 +243,16 @@ def process_repo(repo, cm, cfg, client, resolver) -> tuple:
 
     gstats = collect_git_stats(repo, cm, cfg)
 
-    ups = {}
+    ups = None
     if repo.is_fork and repo.upstream:
         try:
             ups = count_upstream_excluded(repo, cm, cfg)
         except GitError as exc:
-            # 上游 fetch 失败不该让整个仓库失败，退化为等于 commits
+            # 上游 fetch 失败不该让整个仓库失败。传 None 而非 {}：后者会被
+            # 当成"无人独立于上游"而把所有人记 0，抹掉真实贡献
             print(f"  提示：{repo.name} 上游对比失败，"
                   f"commits_not_in_upstream 退化为等于 commits（{exc}）")
-            ups = {}
+            ups = None
 
     return build_rows(repo, gstats, api, resolver, cfg, ups)
 
