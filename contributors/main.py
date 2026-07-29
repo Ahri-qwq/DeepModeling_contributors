@@ -20,7 +20,8 @@ from .git_stats import (
 from .identity import IdentityResolver, is_bot
 from .models import ApiStats
 from .output import (
-    LINE_CAVEAT, Row, summarize, write_csv, write_json, write_markdown,
+    SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
+    write_markdown,
 )
 from .repos import fetch_repos, filter_repos
 
@@ -111,6 +112,52 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
     return rows, bots
 
 
+def merge_by_name(rows: list) -> list:
+    """把无 login 的行合并进同仓库中姓名相同的已知 login 行。
+
+    实测背景：贡献者用未在 GitHub 登记的邮箱提交时反查不到 login，会被
+    拆成独立条目。deepmd-kit 中 Han Wang 被拆成 1151+110 两行，
+    abacus-develop 中 dyzheng 被拆成 128+278，榜单严重失真。这些条目的
+    git 姓名与其 login 条目完全一致，可据此合并。
+
+    保守规则，宁可漏合并也不错合并：
+    - 只在同一仓库内合并（跨仓库重名风险高得多）
+    - 姓名须完全相同（去空白、忽略大小写）；实测 abacus_fixer 与
+      Mohan Chen 确为同一人但姓名不同，本规则刻意不合并
+    - 同名对应多个 login 时不合并，因为无法判定归属
+    - 两个都无 login 的行不互相合并，无从确认是同一人
+    """
+    # (repo, 归一化姓名) -> 该组合下的 login 行
+    by_name: dict = {}
+    for r in rows:
+        if not r.login or not r.name.strip():
+            continue
+        key = (r.repo, " ".join(r.name.split()).lower())
+        by_name.setdefault(key, []).append(r)
+
+    merged_away = set()
+    for r in rows:
+        if r.login or not r.name.strip():
+            continue
+        key = (r.repo, " ".join(r.name.split()).lower())
+        targets = by_name.get(key, [])
+        if len(targets) != 1:
+            # 无匹配或有歧义，保持独立并留在 unmatched 供人工确认
+            continue
+        t = targets[0]
+        for f in SUM_FIELDS:
+            setattr(t, f, getattr(t, f) + getattr(r, f))
+        for f in _LINE_FIELDS:
+            a, b = getattr(t, f), getattr(r, f)
+            if a is not None or b is not None:
+                setattr(t, f, (a or 0) + (b or 0))
+        emails = {e for e in (t.email + ";" + r.email).split(";") if e}
+        t.email = ";".join(sorted(emails))
+        merged_away.add(id(r))
+
+    return [r for r in rows if id(r) not in merged_away]
+
+
 def process_repo(repo, cm, cfg, client, resolver) -> tuple:
     """采集单仓库两侧数据并合并。不传 token：git 层用匿名访问公开仓库。"""
     clone_or_fetch(repo, cm, cfg)
@@ -137,12 +184,29 @@ def process_repo(repo, cm, cfg, client, resolver) -> tuple:
     return build_rows(repo, gstats, api, resolver, cfg, ups)
 
 
+def _load_repos(cm, cfg, token):
+    """取仓库清单。--no-fetch 时读缓存，无缓存返回 None 由调用方报错。
+
+    清单必须缓存：--no-fetch 承诺零网络，而该模式下不取 token，
+    联网拉清单会以 401 崩溃（实测确认）。
+    """
+    if cfg.no_fetch:
+        return cm.load_repo_list()
+    repos = fetch_repos(cfg.org, token)
+    cm.save_repo_list(repos)
+    return repos
+
+
 def run(cfg, token: str) -> int:
     cm = CacheManager(cfg.cache_dir)
     out = Path(cfg.out_dir)
     started = time.time()
 
-    all_repos = fetch_repos(cfg.org, token)
+    all_repos = _load_repos(cm, cfg, token)
+    if all_repos is None:
+        print("指定了 --no-fetch，但本地没有仓库清单缓存。"
+              "请先不带该参数运行一次以建立缓存。")
+        return 2
     kept, skipped = filter_repos(all_repos, cfg)
 
     if not cfg.no_fetch:
@@ -167,7 +231,7 @@ def run(cfg, token: str) -> int:
         print(f"[{i}/{len(kept)}] {repo.name} ...", flush=True)
         try:
             r, b = process_repo(repo, cm, cfg, client, resolver)
-            rows.extend(r)
+            rows.extend(merge_by_name(r))
             bots.extend(b)
         except (GitError, RateLimitError, RuntimeError, OSError) as exc:
             failures[repo.name] = str(exc)[:500]

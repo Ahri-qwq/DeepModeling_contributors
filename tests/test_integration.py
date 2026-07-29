@@ -181,8 +181,12 @@ def test_include_bots_puts_them_back_in_main_rows(tiny_repo):
 
 # --- 完整 run()，用 monkeypatch 隔离网络 ---
 
-def _patch_network(monkeypatch, repos):
-    """替换 main 命名空间里的两个联网函数。
+def _patch_network(monkeypatch, repos, cfg=None):
+    """隔离联网部分。
+
+    fetch_repos 仍要 patch（供非 --no-fetch 路径用），但 --no-fetch 下
+    run() 读的是清单缓存，故还要把 repos 预写进缓存 —— 否则测试会绕过
+    真实的 --no-fetch 代码路径，掩盖它是否真能零网络运行。
 
     必须 patch contributors.main 上的名字而非源模块，因为 main 用
     from ... import 把它们绑定到了自己的命名空间。
@@ -191,12 +195,14 @@ def _patch_network(monkeypatch, repos):
     monkeypatch.setattr(m, "fetch_repos", lambda org, token: repos)
     monkeypatch.setattr(m, "collect_api_stats",
                         lambda repo, cfg, client, cm: ({}, {}))
+    if cfg is not None:
+        CacheManager(cfg.cache_dir).save_repo_list(repos)
     return m
 
 
 def test_run_writes_all_output_files(tiny_repo, monkeypatch):
-    m = _patch_network(monkeypatch, [mk_repo()])
     cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
     code = m.run(cfg, token="fake")
     assert code == 0
     out = Path(cfg.out_dir)
@@ -212,8 +218,8 @@ def test_run_meta_records_skipped_repos(tiny_repo, monkeypatch):
     big = RepoInfo(name="huge", default_branch="main", size_mb=99999.0,
                    pushed_at="2026-07-01T00:00:00Z", is_fork=False,
                    upstream=None, upstream_family=None, archived=False)
-    m = _patch_network(monkeypatch, [mk_repo(), big])
     cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo(), big], cfg)
     m.run(cfg, token="fake")
     meta = json.loads(
         (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
@@ -226,8 +232,8 @@ def test_single_repo_failure_does_not_abort_run(tiny_repo, monkeypatch):
     bad = RepoInfo(name="bad", default_branch="main", size_mb=1.0,
                    pushed_at="2026-07-01T00:00:00Z", is_fork=False,
                    upstream=None, upstream_family=None, archived=False)
-    m = _patch_network(monkeypatch, [mk_repo(), bad])
     cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo(), bad], cfg)
     code = m.run(cfg, token="fake")
     meta = json.loads(
         (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
@@ -240,8 +246,8 @@ def test_single_repo_failure_does_not_abort_run(tiny_repo, monkeypatch):
 
 def test_run_reports_unmatched_emails(tiny_repo, monkeypatch):
     import json
-    m = _patch_network(monkeypatch, [mk_repo()])
     cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
     m.run(cfg, token="fake")
     meta = json.loads(
         (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
@@ -250,3 +256,125 @@ def test_run_reports_unmatched_emails(tiny_repo, monkeypatch):
     body = (Path(cfg.out_dir) / "unmatched.csv").read_text(encoding="utf-8-sig")
     assert "alice@example.com" in body
 
+
+
+# --- 按姓名合并未归并身份 ---
+#
+# 实测背景（deepmd-kit / abacus-develop）：贡献者用未在 GitHub 登记的邮箱
+# 提交时反查不到 login，会被拆成独立条目。实测 Han Wang 被拆成 1151+110、
+# dyzheng 被拆成 128+278，榜单严重失真。这些条目的 git 姓名与其 login
+# 条目的姓名完全一致，可据此合并。
+#
+# 只在同一仓库内、姓名完全相同（去空白、忽略大小写）时合并：跨仓库合并
+# 风险更高，而重名在单个仓库内的概率很低。
+
+def _row(login, name, email, commits, repo="tiny"):
+    from contributors.output import Row
+    return Row(repo=repo, login=login, name=name, email=email,
+               github_url=f"https://github.com/{login}" if login else "",
+               commits=commits, commits_not_in_upstream=commits,
+               pr_created=0, pr_merged=0, pr_reviewed=0,
+               issue_created=0, issue_commented=0,
+               is_fork=False, upstream="", upstream_family="", is_bot=False)
+
+
+def test_merges_unlinked_row_into_matching_login_row():
+    from contributors.main import merge_by_name
+    rows = [_row("wanghan-iapcm", "Han Wang", "a@noreply", 110),
+            _row("", "Han Wang", "wang_han@iapcm.ac.cn", 1151)]
+    out = merge_by_name(rows)
+    assert len(out) == 1
+    assert out[0].login == "wanghan-iapcm"
+    assert out[0].commits == 1261
+
+
+def test_merged_row_keeps_both_emails():
+    from contributors.main import merge_by_name
+    rows = [_row("dyzheng", "dyzheng", "zhengdy@aisi.ac.cn", 278),
+            _row("", "dyzheng", "zhengdy@bjaisi.com", 128)]
+    out = merge_by_name(rows)
+    assert set(out[0].email.split(";")) == {"zhengdy@aisi.ac.cn",
+                                            "zhengdy@bjaisi.com"}
+
+
+def test_name_match_ignores_case_and_whitespace():
+    from contributors.main import merge_by_name
+    rows = [_row("alice", "Alice Smith", "a@x.com", 5),
+            _row("", "  alice smith ", "b@y.com", 3)]
+    assert len(merge_by_name(rows)) == 1
+
+
+def test_different_names_are_not_merged():
+    from contributors.main import merge_by_name
+    # 实测 abacus_fixer 与 Mohan Chen 是同一人，但姓名不同，
+    # 本规则刻意不合并 —— 宁可漏合并，不可错合并
+    rows = [_row("mohanchen", "Mohan Chen", "a@pku.edu.cn", 117),
+            _row("", "abacus_fixer", "b@pku.eud.cn", 755)]
+    assert len(merge_by_name(rows)) == 2
+
+
+def test_does_not_merge_across_repos():
+    from contributors.main import merge_by_name
+    rows = [_row("alice", "Alice", "a@x.com", 5, repo="r1"),
+            _row("", "Alice", "b@y.com", 3, repo="r2")]
+    assert len(merge_by_name(rows)) == 2
+
+
+def test_two_unlinked_rows_are_not_merged_with_each_other():
+    # 都无 login 时无法确认是同一人，保持分开并留在 unmatched
+    from contributors.main import merge_by_name
+    rows = [_row("", "Alice", "a@x.com", 5), _row("", "Alice", "b@y.com", 3)]
+    assert len(merge_by_name(rows)) == 2
+
+
+def test_ambiguous_name_matching_two_logins_is_left_alone():
+    """同名对应多个 login 时无法判定归属，不合并。"""
+    from contributors.main import merge_by_name
+    rows = [_row("alice1", "Alice", "a@x.com", 5),
+            _row("alice2", "Alice", "b@x.com", 4),
+            _row("", "Alice", "c@y.com", 3)]
+    assert len(merge_by_name(rows)) == 3
+
+
+def test_rows_without_name_are_never_merged():
+    from contributors.main import merge_by_name
+    rows = [_row("alice", "", "a@x.com", 5), _row("", "", "b@y.com", 3)]
+    assert len(merge_by_name(rows)) == 2
+
+
+def test_line_counts_are_summed_when_present():
+    from contributors.main import merge_by_name
+    a = _row("alice", "Alice", "a@x.com", 5)
+    b = _row("", "Alice", "b@y.com", 3)
+    a.additions, b.additions = 10, 7
+    out = merge_by_name(rows := [a, b])
+    assert out[0].additions == 17
+
+
+def test_no_fetch_without_cached_list_exits_cleanly(tiny_repo, monkeypatch):
+    """--no-fetch 且无清单缓存时应给出指引并退出，而非联网崩溃。
+
+    实测缺陷：原实现在 --no-fetch 下仍调用 fetch_repos，而该模式不取
+    token，空 token 请求 GitHub 返回 401 未捕获异常，使 README 承诺的
+    "改时间窗零网络重算"完全不可用。
+    """
+    import contributors.main as m
+
+    def must_not_be_called(org, token):
+        raise AssertionError("--no-fetch 下不得联网拉取仓库清单")
+
+    monkeypatch.setattr(m, "fetch_repos", must_not_be_called)
+    cfg = mk_cfg(tiny_repo, no_fetch=True)
+    assert m.run(cfg, token="") == 2
+
+
+def test_repo_list_is_cached_for_later_offline_runs(tiny_repo, monkeypatch):
+    """联网运行应把清单写入缓存，供后续 --no-fetch 使用。"""
+    import contributors.main as m
+    monkeypatch.setattr(m, "fetch_repos", lambda org, token: [mk_repo()])
+    monkeypatch.setattr(m, "collect_api_stats",
+                        lambda repo, cfg, client, cm: ({}, {}))
+    monkeypatch.setattr(m, "clone_or_fetch", lambda repo, cm, cfg: None)
+    cfg = mk_cfg(tiny_repo)
+    m.run(cfg, token="fake")
+    assert CacheManager(cfg.cache_dir).load_repo_list() is not None

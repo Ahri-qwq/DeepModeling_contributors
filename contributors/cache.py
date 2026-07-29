@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import stat
+from dataclasses import asdict
 from pathlib import Path
 
 from .models import RepoInfo
@@ -26,6 +27,7 @@ class CacheManager:
         self.repos_dir = self.root / "repos"
         self.api_dir = self.root / "api"
         self.progress_path = self.root / "progress.json"
+        self.repo_list_path = self.root / "repo_list.json"
         self._meta_path = self.root / "fetch_meta.json"
 
     # --- 路径 ---
@@ -91,6 +93,30 @@ class CacheManager:
         meta = self._load_meta()
         meta[name] = {"pushed_at": pushed_at}
         self._write_json(self._meta_path, meta)
+
+    # --- 仓库清单 ---
+
+    def save_repo_list(self, repos: list) -> None:
+        self._write_json(
+            self.repo_list_path,
+            {"repos": [asdict(r) for r in repos]},
+        )
+
+    def load_repo_list(self):
+        """返回缓存的仓库清单，从未缓存或缓存损坏时返回 None。
+
+        None 与空列表必须可区分：前者是"没有缓存，需要联网"，
+        后者是"组织确实没有仓库"。--no-fetch 依赖这个区分给出准确提示。
+        """
+        raw = self._read_json(self.repo_list_path)
+        items = raw.get("repos")
+        if not isinstance(items, list):
+            return None
+        try:
+            return [RepoInfo(**d) for d in items]
+        except TypeError:
+            # 字段结构变化（如升级后新增字段），视为无缓存而非崩溃
+            return None
 
     # --- 断点续跑 ---
 

@@ -241,3 +241,41 @@ def test_free_space_error_mentions_how_to_fix(tmp_path, monkeypatch):
     )
     with pytest.raises(CacheError, match="--cache-dir"):
         cm.free_space_mb()
+
+
+# --- 仓库清单缓存 ---
+#
+# 实测发现的缺陷：--no-fetch 声称零网络，但 run() 仍调用 fetch_repos
+# 联网拉清单。而 --no-fetch 下不取 token，空 token 请求返回 401 崩溃，
+# 使 README 承诺的"改时间窗零网络重算"完全不可用。故清单也要缓存。
+
+def test_repo_list_roundtrip(tmp_path):
+    cm = CacheManager(str(tmp_path))
+    repos = [mk_repo("a", size_mb=1.0), mk_repo("b", size_mb=2.0)]
+    cm.save_repo_list(repos)
+    out = cm.load_repo_list()
+    assert [r.name for r in out] == ["a", "b"]
+
+
+def test_repo_list_preserves_all_fields(tmp_path):
+    cm = CacheManager(str(tmp_path))
+    r = RepoInfo(name="abacus-develop", default_branch="develop",
+                 size_mb=165.3, pushed_at="2026-07-29T00:00:00Z",
+                 is_fork=True, upstream="abacusmodeling/abacus-develop",
+                 upstream_family="self", archived=False)
+    cm.save_repo_list([r])
+    got = cm.load_repo_list()[0]
+    assert got == r
+
+
+def test_load_repo_list_returns_none_when_absent(tmp_path):
+    # None 与空列表要能区分：前者是"从未缓存"，后者是"组织确实没有仓库"
+    cm = CacheManager(str(tmp_path))
+    assert cm.load_repo_list() is None
+
+
+def test_load_repo_list_survives_corrupt_json(tmp_path):
+    cm = CacheManager(str(tmp_path))
+    cm.repo_list_path.parent.mkdir(parents=True, exist_ok=True)
+    cm.repo_list_path.write_text("{not json", encoding="utf-8")
+    assert cm.load_repo_list() is None

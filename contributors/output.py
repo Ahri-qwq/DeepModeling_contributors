@@ -30,8 +30,8 @@ LINE_CAVEAT = (
     "additions/deletions 为过滤后数值，additions_raw/deletions_raw 为原始值。"
 )
 
-# summarize 中需要跨仓库累加的计数字段
-_SUM_FIELDS = (
+# 跨仓库/跨邮箱累加时需要求和的计数字段。summarize 与 main.merge_by_name 共用
+SUM_FIELDS = (
     "commits", "commits_not_in_upstream", "pr_created", "pr_merged",
     "pr_reviewed", "issue_created", "issue_commented",
 )
@@ -88,7 +88,7 @@ def summarize(rows: list) -> list:
             emails[key] = set()
         else:
             m = merged[key]
-            for f in _SUM_FIELDS:
+            for f in SUM_FIELDS:
                 setattr(m, f, getattr(m, f) + getattr(r, f))
             for f in LINE_COLUMNS:
                 a, b = getattr(m, f), getattr(r, f)
