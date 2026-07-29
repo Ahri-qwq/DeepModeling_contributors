@@ -1,0 +1,44 @@
+{
+  "data": {
+    "rateLimit": {"cost": 1, "remaining": 4991},
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {"hasNextPage": false, "endCursor": "Y3Vy"},
+        "nodes": [
+          {
+            "number": 1050,
+            "createdAt": "2026-07-01T00:00:00Z",
+            "merged": false,
+            "author": {"login": "alice"},
+            "reviews": {"nodes": [{"author": {"login": "bob"}}, {"author": {"login": "bob"}}]},
+            "comments": {"nodes": [{"author": {"login": "carol"}}]}
+          },
+          {
+            "number": 1049,
+            "createdAt": "2026-06-01T00:00:00Z",
+            "merged": true,
+            "author": {"login": "alice"},
+            "reviews": {"nodes": [{"author": {"login": "carol"}}]},
+            "comments": {"nodes": []}
+          },
+          {
+            "number": 900,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "merged": true,
+            "author": {"login": "dave"},
+            "reviews": {"nodes": []},
+            "comments": {"nodes": []}
+          },
+          {
+            "number": 1048,
+            "createdAt": "2026-05-01T00:00:00Z",
+            "merged": true,
+            "author": null,
+            "reviews": {"nodes": [{"author": null}]},
+            "comments": {"nodes": []}
+          }
+        ]
+      }
+    }
+  }
+}
