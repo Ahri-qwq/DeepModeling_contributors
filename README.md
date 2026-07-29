@@ -35,12 +35,23 @@ python -m contributors --since 2025-01-01 --until 2025-12-31
 # 便捷写法
 python -m contributors --months 3
 
-# 改时间窗重算：零网络，秒级完成
-python -m contributors --since 2026-01-01 --no-fetch
+# 只跑指定仓库（抽查或分批统计）
+python -m contributors --repos deepmd-kit,abacus-develop
+
+# 只纳入 fork 自组织内部的仓库
+python -m contributors --include-forks self
 
 # 统计代码增删行数（默认关闭）
 python -m contributors --count-lines
+
+# 纯离线重算 commit 口径，不访问网络
+python -m contributors --since 2026-01-01 --no-fetch
 ```
+
+`--no-fetch` 只用本地缓存并跳过 GitHub API，因此 PR 与 issue 各列全为 0，
+email→login 映射也拿不到（实测同一批数据从 236 人掉到 175 人，仅 41 人能
+关联账号）。它适合快速验证 commit 侧口径；出正式名单要走带 API 的完整跑法，
+GraphQL 结果有缓存，重跑不慢。
 
 完整参数见 `python -m contributors --help`。
 
@@ -53,7 +64,7 @@ python -m contributors --count-lines
 | repos/<name>.csv | 按仓库拆分，便于分发给各项目负责人 |
 | contributors.md | Markdown 表格，可直接贴文档公示 |
 | contributors.json | 完整结构化数据 |
-| unmatched.csv | 未能关联 GitHub 账号的身份，需人工确认 |
+| unmatched.csv | 未能关联 GitHub 账号的身份，附姓名与贡献量，需人工确认 |
 | bots.csv | 被识别为 bot 的账号，供核对是否误判 |
 | run_meta.json | 运行参数、跳过与失败的仓库、API 用量 |
 
@@ -75,6 +86,9 @@ fetch。改时间窗时用 `--no-fetch` 可完全离线重算。
 - fork 分为 self / external / tooling 三类，用 `--include-forks` 控制纳入
   范围；`commits_not_in_upstream` 列给出排除上游可达提交后的数量
 - 代码行数指标默认关闭，且不宜用于排名（易被生成文件污染）
+- 贡献者用未在 GitHub 登记的邮箱提交时查不到账号，会被拆成独立条目。
+  同仓库内姓名完全相同且只对应一个已知账号时自动合并；姓名不同、同名
+  对应多个账号、或两条都无账号时一律不合并，宁可漏合并也不错合并
 - 未能关联 GitHub 账号的贡献者不会被丢弃，会列入 unmatched.csv
 - bot 仅按 login 与 name 判定（`[bot]` 后缀或显式黑名单），不查邮箱：
   实测邮箱本地部分含 renovate 等词的真人会被误判
