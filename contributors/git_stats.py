@@ -4,13 +4,15 @@
 - 用 git log --all 覆盖所有分支。它按 commit SHA 天然去重，已合并的
   feature 分支不会让贡献者被重复计数（实测 dpdata 473 条 = 473 个唯一 SHA）。
 - --no-merges 排除合并提交，否则合并者会被算上整个分支的改动。
-- 时间过滤交给 git 的 --since/--until，因为 %aI 返回的是作者本地时区
-  （实测有 +08:00），自行解析比较容易错位；传入时统一用 UTC ISO 字符串。
+- 时间过滤在 Python 侧做，不用 git 的 --since/--until：后者按 committer
+  date 过滤且会截断遍历，两点都会算错窗口（详见 parse_git_log 的说明）。
+  %aI 带作者本地时区（实测有 +08:00），比较前统一换算到 UTC。
 - clone/fetch 不传 token：deepmodeling 全部仓库为公开（实测私有数为 0），
   匿名访问即可。token 拼进 URL 会明文写入 .git/config 并长期留在缓存目录。
 """
 import fnmatch
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -59,8 +61,41 @@ def _init_line_fields(gs: GitStats) -> None:
     gs.deletions_raw = 0
 
 
-def parse_git_log(text: str, count_lines: bool, exclude_paths: list) -> dict:
-    """解析 git log 输出，按归一化 email 聚合，返回 {email: GitStats}。"""
+def _author_date_in_window(when: str, since, until) -> bool:
+    """判断 author date 是否落在半开区间 [since, until) 内。
+
+    %aI 带作者本地时区（实测有 +08:00），须换算到 UTC 再比较。
+    日期无法解析时返回 True：宁可多算也不漏算真实贡献者。
+    """
+    if since is None and until is None:
+        return True
+    try:
+        t = datetime.fromisoformat(when.strip()).astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        return True
+    if since is not None and t < since:
+        return False
+    if until is not None and t >= until:
+        return False
+    return True
+
+
+def parse_git_log(text: str, count_lines: bool, exclude_paths: list,
+                  since=None, until=None) -> dict:
+    """解析 git log 输出，按归一化 email 聚合，返回 {email: GitStats}。
+
+    since/until 为 UTC 半开区间 [since, until)，按 author date 过滤。
+    两者都为 None 时不过滤。
+
+    为什么过滤在这里做而不交给 git（两处实测确认的 git 行为）：
+    1. git log --since/--until 过滤的是 committer date，而本项目的口径是
+       author date。rebase / cherry-pick / squash 合并会让两者相差数月，
+       导致提交落进错误的统计窗口。git 没有按 author date 过滤的选项。
+    2. --since 遇到窗口外的提交会截断遍历，不再深入其祖先。若某分支顶端
+       有一条旧日期提交（rebase、导入历史、本地时钟错误都会产生），该分支
+       上窗口内的提交会被整片漏掉。--since-as-filter 可避免截断，但仍是
+       committer date 口径，不解决第 1 点。
+    """
     stats: dict = {}
     seen_files: dict = {}
     cur: Optional[GitStats] = None
@@ -81,6 +116,11 @@ def parse_git_log(text: str, count_lines: bool, exclude_paths: list) -> dict:
             _, _sha, name, email, _when = parts[:5]
             key = normalize_email(email)
             if not key:
+                cur, cur_key = None, None
+                continue
+            if not _author_date_in_window(_when, since, until):
+                # 窗口外的提交：同样要清空当前作者，否则它的 numstat 行
+                # 会被累加到上一位窗口内贡献者头上
                 cur, cur_key = None, None
                 continue
             if key not in stats:
@@ -204,17 +244,17 @@ def clone_or_fetch(repo, cm, cfg) -> None:
 
 
 def collect_git_stats(repo, cm, cfg) -> dict:
-    """统计窗口内所有分支的提交，返回 {email: GitStats}。"""
-    args = [
-        "log", "--all", "--no-merges",
-        f"--since={cfg.since.isoformat()}",
-        f"--until={cfg.until.isoformat()}",
-        f"--format={LOG_FORMAT}",
-    ]
+    """统计窗口内所有分支的提交，返回 {email: GitStats}。
+
+    不向 git 传 --since/--until：那会按 committer date 过滤并截断遍历
+    （详见 parse_git_log 的说明）。取全量后在 Python 侧按 author date 筛。
+    """
+    args = ["log", "--all", "--no-merges", f"--format={LOG_FORMAT}"]
     if cfg.count_lines:
         args.append("--numstat")
     text = _run_git(args, cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT)
-    return parse_git_log(text, cfg.count_lines, cfg.exclude_paths)
+    return parse_git_log(text, cfg.count_lines, cfg.exclude_paths,
+                         since=cfg.since, until=cfg.until)
 
 
 def count_upstream_excluded(repo, cm, cfg) -> dict:
@@ -242,8 +282,8 @@ def count_upstream_excluded(repo, cm, cfg) -> dict:
     text = _run_git([
         "log", "--all", "--no-merges",
         "--not", "--remotes=upstream",
-        f"--since={cfg.since.isoformat()}",
-        f"--until={cfg.until.isoformat()}",
         f"--format={LOG_FORMAT}",
     ], cwd=path, timeout=LOG_TIMEOUT)
-    return {k: v.commits for k, v in parse_git_log(text, False, []).items()}
+    # 与 collect_git_stats 保持同一口径：author date，且在 Python 侧过滤
+    parsed = parse_git_log(text, False, [], since=cfg.since, until=cfg.until)
+    return {k: v.commits for k, v in parsed.items()}

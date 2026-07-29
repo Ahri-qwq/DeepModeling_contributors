@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -335,3 +336,85 @@ def test_record_sep_is_not_nul(tmp_path):
     assert "\x00" not in RECORD_SEP
     from contributors.git_stats import LOG_FORMAT
     assert "\x00" not in LOG_FORMAT
+
+
+# --- 时间窗过滤：必须在 Python 侧按 author date 判定 ---
+#
+# 背景（两处实测确认的 git 行为）：
+# 1. git log --since/--until 过滤的是 committer date，而本项目输出的是
+#    author date（%aI）。rebase / squash 合并会让两者相差数月。
+# 2. --since 遇到窗口外提交会截断遍历，其祖先中窗口内的提交被整片漏掉。
+# 故 git 侧不传时间参数，取全量后在此过滤。
+
+def test_window_filter_keeps_commits_inside():
+    text = (f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+            f"{RECORD_SEP}2026-03-01T00:00:00Z\n")
+    stats = parse_git_log(text, count_lines=False, exclude_paths=[],
+                          since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert stats["a@x.com"].commits == 1
+
+
+def test_window_filter_drops_commits_before_since():
+    text = (f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+            f"{RECORD_SEP}2020-01-01T00:00:00Z\n")
+    stats = parse_git_log(text, count_lines=False, exclude_paths=[],
+                          since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert stats == {}
+
+
+def test_window_filter_upper_bound_is_exclusive():
+    # until 内部为半开区间上界，正好等于上界的提交应被排除
+    text = (f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+            f"{RECORD_SEP}2027-01-01T00:00:00Z\n")
+    stats = parse_git_log(text, count_lines=False, exclude_paths=[],
+                          since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert stats == {}
+
+
+def test_window_filter_normalizes_author_local_timezone():
+    # %aI 带作者本地时区，须换算到 UTC 再比较。
+    # 2026-01-01T07:00:00+08:00 即 2025-12-31T23:00:00Z，在窗口外
+    text = (f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+            f"{RECORD_SEP}2026-01-01T07:00:00+08:00\n")
+    stats = parse_git_log(text, count_lines=False, exclude_paths=[],
+                          since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert stats == {}
+
+
+def test_numstat_of_filtered_commit_is_not_attributed():
+    """窗口外提交的 numstat 行绝不能累加到别人头上。"""
+    text = (
+        f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+        f"{RECORD_SEP}2026-03-01T00:00:00Z\n\n"
+        "1\t0\tin_window.py\n"
+        f"C{RECORD_SEP}sha2{RECORD_SEP}B{RECORD_SEP}b@x.com"
+        f"{RECORD_SEP}2020-01-01T00:00:00Z\n\n"
+        "999\t0\tout_of_window.py\n"
+    )
+    stats = parse_git_log(text, count_lines=True, exclude_paths=[],
+                          since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert "b@x.com" not in stats
+    assert stats["a@x.com"].additions == 1
+
+
+def test_no_window_given_keeps_everything():
+    """不传窗口时不过滤，保持既有调用方行为不变。"""
+    text = (f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+            f"{RECORD_SEP}2020-01-01T00:00:00Z\n")
+    stats = parse_git_log(text, count_lines=False, exclude_paths=[])
+    assert stats["a@x.com"].commits == 1
+
+
+def test_unparsable_date_is_kept_not_silently_dropped():
+    """日期异常时宁可多算也不漏算，符合永不静默丢数据的原则。"""
+    text = (f"C{RECORD_SEP}sha1{RECORD_SEP}A{RECORD_SEP}a@x.com"
+            f"{RECORD_SEP}not-a-date\n")
+    stats = parse_git_log(text, count_lines=False, exclude_paths=[],
+                          since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert stats["a@x.com"].commits == 1
