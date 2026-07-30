@@ -4,8 +4,4 @@ output_*/
 __pycache__/
 *.pyc
 .venv/
-
-output_full/
-output_sciencepedia/
-full_run.log
-sciencepedia_run.log
+*_run.log
