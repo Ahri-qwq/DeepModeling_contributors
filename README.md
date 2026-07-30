@@ -2,6 +2,11 @@
 
 整合 git commit 历史与 GitHub API（PR/Issue/Review/Comment），输出可用于感谢与表彰的贡献者名单。
 
+> **适用时间范围：一年以内。**
+> fork 仓库的分类（哪些算社区自己的项目、哪些算外部项目）只对最近一年活跃的仓库经过人工确认。
+> 若把 `--since` 往前挪到一年以上，会有更多沉寂的 fork 进入统计流程，它们的 `upstream_family`
+> 判定未经确认，需要重新走一遍确认流程（见 `docs/2026-07-29-fork清单待确认.md`）。
+
 ## 安装
 
 ```bash
@@ -53,7 +58,7 @@ python -m contributors --max-repo-size 20000
 | `--count-lines` | 关 | 统计代码增删行数 |
 | `--no-fetch` | 关 | 零网络，纯本地缓存重算。API 侧数据全部为空 |
 | `--refresh` | 关 | 强制重新 fetch |
-| `--include-bots` | 关 | 默认排除 bot；开启后并入主名单 |
+| `--exclude-bots` | 关 | 把 `is_bot` 账号移出主表。默认保留并标注 |
 | `--cache-dir` | `./.cache` | 缓存目录 |
 | `--out-dir` | `./output` | 输出目录 |
 | `--format` | `all` | `csv` / `md` / `json` / `all` |
@@ -111,7 +116,12 @@ email→login 映射的来源（按优先级）：
 | `is_fork` | bool | 该仓库是否 fork |
 | `upstream` | str | 上游仓库全名，非 fork 时为空 |
 | `upstream_family` | str | fork 分类：`self` / `external` / `tooling` |
-| `is_bot` | bool | 是否被识别为 bot |
+| `is_bot` | bool | 是否被识别为 CI 机器人（升依赖、跑格式化等自动化） |
+| `is_ai_assistant` | bool | 是否被识别为 AI 代码助手（Copilot 等） |
+
+`is_bot` 与 `is_ai_assistant` 刻意分成两列：前者是 CI 自动化流程，后者是 AI 写的代码，
+人工核对时判断依据完全不同。两类账号默认都保留在主表，只做标注不做排除 —— 从名单里
+删掉一行比事后发现漏了一个人再加回去容易得多。需要移出时用 `--exclude-bots`。
 
 开启 `--count-lines` 时追加：`additions`（新增，已过滤）、`deletions`（删除，已过滤）、`files_changed`（涉及文件数）、`additions_raw`（原始新增）、`deletions_raw`（原始删除）。关闭时这些列不出现。
 
@@ -126,8 +136,15 @@ output/
 ├── contributors.json     # 完整结构化数据，供程序消费
 ├── unmatched.csv         # 未能关联 GitHub 账号的身份，需人工确认
 ├── bots.csv              # 被识别为 bot 的账号，供核对误判
+├── ai_assisted.csv       # AI 助手提交追溯到的指派人，供参考
 └── run_meta.json         # 运行参数、跳过/失败仓库、API 点数消耗
 ```
+
+`ai_assisted.csv` 从 AI 助手提交的 `Co-authored-by` 追溯实际指派人，列为
+`repo`、`name`、`email`、`ai_commits`（该指派人名下的 AI 提交数）、`guess`（同邮箱的已知账号）。
+覆盖率有限：实测三个仓库共 326 次 AI 提交，138 次可追溯（约四成），其余 188 次提交信息里
+没有指派人线索。两个数字都记在 `run_meta.json` 的 `ai_commits_traced` 与
+`ai_commits_untraced`，所以这张表只能当人工核对的线索，不是 AI 提交的完整归属。
 
 ## 缓存
 
@@ -151,7 +168,8 @@ API 响应按天缓存（`./.cache/api/<repo>-<日期>.json`），同日重跑�
 - **时间**：闭区间（含两端），统一按 UTC 判定。提交以 **author date** 为准而非 committer date（rebase/cherry-pick/squash 会刷新后者，导致旧代码被算进新窗口）
 - **分支**：统计所有分支（`git log --all`），按 commit SHA 天然去重，排除合并提交（`--no-merges`）
 - **去重**：Git 侧按 SHA 去重；API 侧同一 PR 内多条 review 只记一次、PR 作者 review 自己的 PR 不计
-- **bot 识别**：仅按 login 与 name 判定。规则：[bot] 后缀 + 显式黑名单（`codecov`、`github-actions` 等）。禁止子串匹配（`botelho` 是真人）。默认排除，`--include-bots` 可并入主名单，同时输出 `bots.csv` 供核对误判
+- **bot 识别**：仅按 login 与 name 判定。规则：[bot] 后缀 + 显式黑名单（`codecov`、`github-actions` 等）。禁止子串匹配（`botelho` 是真人）。默认保留在主表并标注 `is_bot`，`--exclude-bots` 可移出，同时始终输出 `bots.csv` 供核对误判
+- **AI 代码助手**：与 bot 同样只按 login 与 name 精确判定，禁止子串匹配（`copilotkid` 是真人）。默认保留在主表并标注 `is_ai_assistant`，不受 `--exclude-bots` 影响
 - **未关联身份**：查不到 GitHub 账号的邮箱不会丢弃，记入 `unmatched.csv`。漏掉一个真实贡献者比多算一个严重
 - **行数**：默认关闭，不宜用于排名。易被生成文件（lock 文件、vendored 代码、数据文件）污染；行数与贡献价值关联弱。已内置排除模式（`*.lock`、`vendor/**`、`*.npy` 等）并同时输出过滤前后两组数字
 
