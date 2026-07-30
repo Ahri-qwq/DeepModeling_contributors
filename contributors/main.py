@@ -16,7 +16,8 @@ from .auth import AuthError, get_token
 from .cache import CacheError, CacheManager
 from .config import parse_args
 from .git_stats import (
-    GitError, clone_or_fetch, collect_git_stats, count_upstream_excluded,
+    GitError, clone_or_fetch, collect_ai_coauthors, collect_git_stats,
+    count_upstream_excluded,
 )
 from .identity import IdentityResolver, is_ai_assistant, is_bot
 from .models import ApiStats
@@ -242,8 +243,42 @@ def build_unmatched_report(rows: list, unmatched: set) -> list:
     return sorted(out, key=lambda d: (-d["commits"], d["identity"]))
 
 
+AI_ASSISTED_COLUMNS = ["repo", "name", "email", "ai_commits", "guess"]
+
+
+def build_ai_assisted_report(ai_records: list, rows: list) -> list:
+    """把 AI 助手提交追溯到的指派人整理成附表。
+
+    只列追溯成功的条目；未追溯的总数记入 run_meta.json，不混进本表 ——
+    附表是"谁指派了 AI"的线索，未追溯的部分无人可列。
+
+    实测覆盖率约两成（deepmd-kit 231 次中 46 次），故本表不能当作
+    AI 提交的完整归属，只作人工核对的参考。
+    """
+    known: dict = {}
+    for r in rows:
+        for e in r.email.split(";"):
+            if e and r.login:
+                known[e] = r.login
+
+    agg: dict = {}
+    for rec in ai_records:
+        for (name, email), n in rec["traced"].items():
+            key = (rec["repo"], name, email)
+            agg[key] = agg.get(key, 0) + n
+
+    out = []
+    for (repo, name, email), n in agg.items():
+        out.append({"repo": repo, "name": name, "email": email,
+                    "ai_commits": n, "guess": known.get(email, "")})
+    return sorted(out, key=lambda d: (-d["ai_commits"], d["repo"], d["name"]))
+
+
 def process_repo(repo, cm, cfg, client, resolver) -> tuple:
-    """采集单仓库两侧数据并合并。不传 token：git 层用匿名访问公开仓库。"""
+    """采集单仓库两侧数据并合并。不传 token：git 层用匿名访问公开仓库。
+
+    返回 (正常行, bot 行, AI 追溯记录)。
+    """
     clone_or_fetch(repo, cm, cfg)
 
     api: dict = {}
@@ -266,7 +301,17 @@ def process_repo(repo, cm, cfg, client, resolver) -> tuple:
                   f"commits_not_in_upstream 退化为等于 commits（{exc}）")
             ups = None
 
-    return build_rows(repo, gstats, api, resolver, cfg, ups)
+    # AI 指派人追溯（Q8 附表）。失败不影响主统计：它只是参考信息，
+    # 而主名单不能因附表出错而整仓失败
+    try:
+        traced, untraced = collect_ai_coauthors(repo, cm, cfg)
+    except GitError as exc:
+        print(f"  提示：{repo.name} AI 指派人追溯失败，附表将缺该仓库（{exc}）")
+        traced, untraced = {}, 0
+
+    rows, bots = build_rows(repo, gstats, api, resolver, cfg, ups)
+    ai = {"repo": repo.name, "traced": traced, "untraced": untraced}
+    return rows, bots, ai
 
 
 def _load_repos(cm, cfg, token):
@@ -310,21 +355,22 @@ def run(cfg, token: str) -> int:
 
     client = None if cfg.no_fetch else GitHubGraphQL(token)
     resolver = IdentityResolver()
-    rows, bots, failures = [], [], {}
+    rows, bots, failures, ai_records = [], [], {}, []
 
     for i, repo in enumerate(kept, 1):
         print(f"[{i}/{len(kept)}] {repo.name} ...", flush=True)
         try:
-            r, b = process_repo(repo, cm, cfg, client, resolver)
+            r, b, ai = process_repo(repo, cm, cfg, client, resolver)
             rows.extend(merge_by_name(r))
             bots.extend(b)
+            ai_records.append(ai)
         except (GitError, RateLimitError, RuntimeError, OSError) as exc:
             failures[repo.name] = str(exc)[:500]
             print(f"  失败：{exc}")
 
-    _write_outputs(rows, bots, resolver, cfg, out)
+    _write_outputs(rows, bots, ai_records, resolver, cfg, out)
     meta = _write_meta(all_repos, kept, skipped, failures, rows, bots,
-                       resolver, client, cfg, out, started)
+                       ai_records, resolver, client, cfg, out, started)
 
     since_s, until_s = meta["window"]["since"], meta["window"]["until"]
     print(f"\n统计区间: {since_s} ~ {until_s}（UTC，含两端）")
@@ -340,7 +386,7 @@ def run(cfg, token: str) -> int:
     return 0
 
 
-def _write_outputs(rows, bots, resolver, cfg, out: Path) -> None:
+def _write_outputs(rows, bots, ai_records, resolver, cfg, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     per_repo: dict = {}
     for r in rows:
@@ -364,10 +410,15 @@ def _write_outputs(rows, bots, resolver, cfg, out: Path) -> None:
         build_unmatched_report(rows, resolver.unmatched_emails()),
     )
     write_csv(bots, out / "bots.csv", cfg)
+    # AI 指派人追溯附表（Q8）。即使为空也要落盘，让人知道跑过这一步
+    _write_simple_csv(
+        out / "ai_assisted.csv", AI_ASSISTED_COLUMNS,
+        build_ai_assisted_report(ai_records, rows),
+    )
 
 
-def _write_meta(all_repos, kept, skipped, failures, rows, bots, resolver,
-                client, cfg, out: Path, started: float) -> dict:
+def _write_meta(all_repos, kept, skipped, failures, rows, bots, ai_records,
+                resolver, client, cfg, out: Path, started: float) -> dict:
     since_s = cfg.since.date().isoformat()
     until_s = (cfg.until - timedelta(days=1)).date().isoformat()
     meta = {
@@ -389,6 +440,11 @@ def _write_meta(all_repos, kept, skipped, failures, rows, bots, resolver,
         "ai_assistants_flagged": len(
             {r.login for r in rows if r.is_ai_assistant}
         ),
+        # 追溯覆盖率：实测约两成，两个数都要给，否则附表会被误当成完整归属
+        "ai_commits_traced": sum(
+            n for rec in ai_records for n in rec["traced"].values()
+        ),
+        "ai_commits_untraced": sum(rec["untraced"] for rec in ai_records),
         "unmatched_emails": len(resolver.unmatched_emails()),
         "api_points_spent": getattr(client, "spent", 0),
         "api_points_remaining": getattr(client, "remaining", None),

@@ -11,20 +11,34 @@
   匿名访问即可。token 拼进 URL 会明文写入 .git/config 并长期留在缓存目录。
 """
 import fnmatch
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .identity import normalize_email
+from .identity import is_ai_assistant, normalize_email, parse_noreply_login
 from .models import GitStats
 
 RECORD_SEP = "\x1f"
+# 记录终止符（ASCII 记录分隔符）。追溯 AI 指派人要读 commit body，而 body
+# 本身含换行与空行，无法按行切分记录，故需显式终止符。同样不能用 \x00。
+RECORD_TERM = "\x1e"
 # C 前缀标记提交行，与 numstat 数据行区分。
 # 分隔符用 \x1f（ASCII 单元分隔符）而非 \x00：Windows 的 CreateProcess
 # 不允许命令行参数含 NUL 字节，用 \x00 会抛 ValueError（实测确认）。
 # \x1f 同样不可能出现在邮箱、姓名或 SHA 中。
 LOG_FORMAT = f"C{RECORD_SEP}%H{RECORD_SEP}%aN{RECORD_SEP}%aE{RECORD_SEP}%aI"
+
+# 追溯附表专用格式：SHA、作者邮箱、author date、完整 body，记录以 \x1e 终止
+AI_LOG_FORMAT = (
+    f"%H{RECORD_SEP}%aE{RECORD_SEP}%aI{RECORD_SEP}%B{RECORD_TERM}"
+)
+
+_COAUTHOR_RE = re.compile(
+    r"^\s*Co-authored-by:\s*(.+?)\s*<([^>]+)>\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 CLONE_TIMEOUT = 1800  # 30 分钟/仓库
 LOG_TIMEOUT = 600
@@ -160,6 +174,62 @@ def parse_git_log(text: str, count_lines: bool, exclude_paths: list,
         cur.files_changed = len(seen_files[cur_key])
 
     return stats
+
+
+def parse_ai_coauthors(text: str, since=None, until=None) -> tuple:
+    """从 AI 助手的提交中追溯实际指派人。
+
+    返回 ({(姓名, 邮箱): 次数}, 未能追溯的提交数)。
+
+    背景（Q8）：用户问 Copilot 的提交能否追溯到最初的提交人。实测可以，
+    但覆盖率有限 —— deepmd-kit 231 次 Copilot 提交中仅 46 次带可用的
+    Co-authored-by，dpdispatcher 58 次中仅 2 次。故未追溯到的数量必须
+    一并返回，否则附表会让人误以为全部可追溯。
+
+    AI 身份按邮箱解析出的 login 判定，不用邮箱子串匹配：
+    mycopilotfan@example.com 是真人。
+    """
+    traced: dict = {}
+    untraced = 0
+
+    for record in text.split(RECORD_TERM):
+        parts = record.split(RECORD_SEP)
+        if len(parts) < 4:
+            continue
+        _sha, email, when, body = parts[0], parts[1], parts[2], parts[3]
+        login = parse_noreply_login(email)
+        if not is_ai_assistant(login, ""):
+            continue
+        if not _author_date_in_window(when, since, until):
+            continue
+
+        # 排除助手把自己列进 Co-authored-by 的情况（实测常见），
+        # 那不是指派人。全部署名都是自己时视为未追溯，否则覆盖率虚高
+        found = False
+        for name, co_email in _COAUTHOR_RE.findall(body):
+            co_login = parse_noreply_login(co_email)
+            if is_ai_assistant(co_login, name):
+                continue
+            key = (name.strip(), normalize_email(co_email))
+            traced[key] = traced.get(key, 0) + 1
+            found = True
+        if not found:
+            untraced += 1
+
+    return traced, untraced
+
+
+def collect_ai_coauthors(repo, cm, cfg) -> tuple:
+    """跑一次 git log 取 AI 助手提交的 body，追溯指派人。
+
+    与 collect_git_stats 分开跑：主统计不需要 body，而 body 会让输出
+    体积上升一个量级，没必要为附表拖慢主流程。
+    """
+    text = _run_git(
+        ["log", "--all", "--no-merges", f"--format={AI_LOG_FORMAT}"],
+        cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT,
+    )
+    return parse_ai_coauthors(text, since=cfg.since, until=cfg.until)
 
 
 def _run_git(args: list, cwd: Optional[Path] = None, timeout: int = 300) -> str:

@@ -248,9 +248,74 @@ def test_run_writes_all_output_files(tiny_repo, monkeypatch):
     out = Path(cfg.out_dir)
     for f in ["summary.csv", "by_repo.csv", "contributors.md",
               "contributors.json", "unmatched.csv", "bots.csv",
-              "run_meta.json"]:
+              "ai_assisted.csv", "run_meta.json"]:
         assert (out / f).is_file(), f"缺少输出文件 {f}"
     assert (out / "repos" / "tiny.csv").is_file()
+
+
+# --- AI 指派人追溯附表（Q8）---
+
+@pytest.fixture
+def ai_repo(tmp_path):
+    """造一个含 Copilot 提交的裸库：一条带指派人、一条不带。"""
+    work = tmp_path / "work"
+    work.mkdir()
+    git(["init", "-q", "-b", "main"], work)
+    git(["config", "user.email", "198982749+Copilot@users.noreply.github.com"],
+        work)
+    git(["config", "user.name", "Copilot"], work)
+
+    (work / "a.py").write_text("print(1)\n")
+    git(["add", "."], work)
+    git(["commit", "-q", "-m",
+         "fix: something\n\nCo-authored-by: njzjz <njzjz@example.com>"],
+        work, when="2026-03-01T00:00:00Z")
+
+    (work / "b.py").write_text("print(2)\n")
+    git(["add", "."], work)
+    git(["commit", "-q", "-m", "fix: no coauthor"], work,
+        when="2026-03-02T00:00:00Z")
+
+    bare = tmp_path / ".cache" / "repos" / "tiny.git"
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    git(["clone", "--mirror", "-q", str(work), str(bare)], tmp_path)
+    return tmp_path
+
+
+def test_ai_assisted_csv_lists_traced_assignee(ai_repo, monkeypatch):
+    import csv as _csv
+    cfg = mk_cfg(ai_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    m.run(cfg, token="fake")
+    p = Path(cfg.out_dir) / "ai_assisted.csv"
+    with p.open(encoding="utf-8-sig", newline="") as f:
+        recs = list(_csv.DictReader(f))
+    njz = [r for r in recs if r["name"] == "njzjz"]
+    assert njz and njz[0]["ai_commits"] == "1"
+    assert njz[0]["repo"] == "tiny"
+
+
+def test_ai_assisted_csv_reports_untraced_count(ai_repo, monkeypatch):
+    # 覆盖率有限（实测约两成），未追溯的数量必须一并给出，
+    # 否则附表会让人误以为全部可追溯
+    import json
+    cfg = mk_cfg(ai_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    m.run(cfg, token="fake")
+    meta = json.loads(
+        (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["ai_commits_traced"] == 1
+    assert meta["ai_commits_untraced"] == 1
+
+
+def test_ai_assisted_csv_is_empty_without_ai_commits(tiny_repo, monkeypatch):
+    import csv as _csv
+    cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    m.run(cfg, token="fake")
+    p = Path(cfg.out_dir) / "ai_assisted.csv"
+    with p.open(encoding="utf-8-sig", newline="") as f:
+        assert list(_csv.DictReader(f)) == []
 
 
 def test_run_meta_records_skipped_repos(tiny_repo, monkeypatch):

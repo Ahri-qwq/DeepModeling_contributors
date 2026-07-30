@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 from contributors.config import DEFAULT_EXCLUDE_PATHS
-from contributors.git_stats import RECORD_SEP, is_excluded, parse_git_log
+from contributors.git_stats import (
+    RECORD_SEP, RECORD_TERM, is_excluded, parse_ai_coauthors, parse_git_log,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "git_log_sample.txt"
 
@@ -418,3 +420,111 @@ def test_unparsable_date_is_kept_not_silently_dropped():
                           since=datetime(2026, 1, 1, tzinfo=timezone.utc),
                           until=datetime(2027, 1, 1, tzinfo=timezone.utc))
     assert stats["a@x.com"].commits == 1
+
+
+# --- AI 助手提交的指派人追溯（Q8 附表）---
+#
+# 实测覆盖率有限：deepmd-kit 231 次 Copilot 提交中仅 46 次带可用的
+# Co-authored-by，dpdispatcher 58 次中 2 次。故未追溯到的部分必须
+# 一并输出，不能只报追溯成功的那些。
+
+def _ai_rec(sha, email, when, body):
+    return (f"{sha}{RECORD_SEP}{email}{RECORD_SEP}{when}"
+            f"{RECORD_SEP}{body}{RECORD_TERM}")
+
+
+WINDOW = dict(since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+              until=datetime(2027, 1, 1, tzinfo=timezone.utc))
+
+
+def test_traces_assignee_from_coauthored_by():
+    text = _ai_rec(
+        "sha1", "198982749+Copilot@users.noreply.github.com",
+        "2026-07-07T00:00:00Z",
+        "fix something\n\nCo-authored-by: njzjz "
+        "<9496702+njzjz@users.noreply.github.com>\n",
+    )
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced[("njzjz", "9496702+njzjz@users.noreply.github.com")] == 1
+    assert untraced == 0
+
+
+def test_ignores_ai_self_coauthor_lines():
+    # 实测 Copilot 常把自己列进 Co-authored-by，那不是指派人
+    text = _ai_rec(
+        "sha1", "198982749+Copilot@users.noreply.github.com",
+        "2026-07-07T00:00:00Z",
+        "x\n\nCo-authored-by: copilot-swe-agent[bot] "
+        "<198982749+Copilot@users.noreply.github.com>\n",
+    )
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced == {}
+    # 自我署名不算追溯成功，必须计入未追溯，否则覆盖率会虚高
+    assert untraced == 1
+
+
+def test_counts_untraced_ai_commits():
+    text = _ai_rec("sha1", "198982749+Copilot@users.noreply.github.com",
+                   "2026-07-07T00:00:00Z", "no coauthor here\n")
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced == {} and untraced == 1
+
+
+def test_ignores_commits_from_non_ai_authors():
+    text = _ai_rec("sha1", "human@example.com", "2026-07-07T00:00:00Z",
+                   "Co-authored-by: someone <s@x.com>\n")
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced == {} and untraced == 0
+
+
+def test_ai_trace_respects_the_window():
+    text = _ai_rec("sha1", "198982749+Copilot@users.noreply.github.com",
+                   "2020-01-01T00:00:00Z",
+                   "Co-authored-by: njzjz <n@x.com>\n")
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced == {} and untraced == 0
+
+
+def test_multiple_coauthors_all_credited():
+    text = _ai_rec(
+        "sha1", "198982749+Copilot@users.noreply.github.com",
+        "2026-07-07T00:00:00Z",
+        "x\n\nCo-authored-by: A <a@x.com>\nCo-authored-by: B <b@x.com>\n",
+    )
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced[("A", "a@x.com")] == 1
+    assert traced[("B", "b@x.com")] == 1
+    # 一次提交只算一次，不因两位共同作者而重复计入覆盖率
+    assert untraced == 0
+
+
+def test_coauthor_header_is_case_insensitive():
+    # 实测 git 生成的是 Co-authored-by，手写的常见 Co-Authored-By
+    text = _ai_rec("sha1", "198982749+Copilot@users.noreply.github.com",
+                   "2026-07-07T00:00:00Z",
+                   "x\n\nCo-Authored-By: A <a@x.com>\n")
+    traced, _ = parse_ai_coauthors(text, **WINDOW)
+    assert traced[("A", "a@x.com")] == 1
+
+
+def test_multiline_body_does_not_break_record_parsing():
+    # body 含空行与多段文字时记录边界仍须正确，否则会串到下一条
+    text = (
+        _ai_rec("sha1", "198982749+Copilot@users.noreply.github.com",
+                "2026-07-07T00:00:00Z",
+                "title\n\nparagraph one\n\nparagraph two\n\n"
+                "Co-authored-by: A <a@x.com>\n")
+        + _ai_rec("sha2", "198982749+Copilot@users.noreply.github.com",
+                  "2026-07-08T00:00:00Z", "lonely\n")
+    )
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced[("A", "a@x.com")] == 1
+    assert untraced == 1
+
+
+def test_ai_detected_by_login_not_email_substring():
+    # 邮箱本地部分含 copilot 的真人不该被当成 AI 助手
+    text = _ai_rec("sha1", "mycopilotfan@example.com",
+                   "2026-07-07T00:00:00Z", "Co-authored-by: A <a@x.com>\n")
+    traced, untraced = parse_ai_coauthors(text, **WINDOW)
+    assert traced == {} and untraced == 0
