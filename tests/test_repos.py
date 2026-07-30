@@ -19,7 +19,7 @@ def mk_cfg(**kw):
         org="deepmodeling",
         since=datetime(2025, 7, 28, tzinfo=timezone.utc),
         until=datetime(2026, 7, 29, tzinfo=timezone.utc),
-        include_forks="all", max_repo_size=2048,
+        include_forks="all", max_repo_size=0,
     )
     base.update(kw)
     return Config(**base)
@@ -86,14 +86,26 @@ def test_repo_pushed_after_since_is_kept():
 
 # --- 体积阈值 ---
 
-def test_oversized_repo_is_skipped():
+def test_huge_repo_kept_by_default():
+    # 默认 max_repo_size=0 不限：统计只读 commit 元数据，无 blob 克隆的
+    # 实际占用与标称体积无关（sciencepedia 标称 17.5 GB，缓存仅 412 MB）
     r = mk_repo(name="sciencepedia", size_mb=17563.2)
-    assert "体积" in should_skip(r, mk_cfg())
+    assert should_skip(r, mk_cfg()) is None
 
 
-def test_oversized_repo_included_when_threshold_raised():
+def test_oversized_repo_skipped_when_limit_set():
     r = mk_repo(name="sciencepedia", size_mb=17563.2)
-    assert should_skip(r, mk_cfg(max_repo_size=20000)) is None
+    assert "体积" in should_skip(r, mk_cfg(max_repo_size=2048))
+
+
+def test_repo_under_explicit_limit_is_kept():
+    r = mk_repo(name="dpdata", size_mb=10.0)
+    assert should_skip(r, mk_cfg(max_repo_size=2048)) is None
+
+
+def test_negative_limit_treated_as_unlimited():
+    r = mk_repo(name="sciencepedia", size_mb=17563.2)
+    assert should_skip(r, mk_cfg(max_repo_size=-1)) is None
 
 
 # --- fork 筛选三档 ---
@@ -140,10 +152,21 @@ def test_filter_repos_returns_kept_and_reasons():
         mk_repo(name="lammps", pushed="2024-04-11T00:00:00Z"),
         mk_repo(name="sciencepedia", size_mb=17563.2),
     ]
-    kept, skipped = filter_repos(repos, mk_cfg())
+    kept, skipped = filter_repos(repos, mk_cfg(max_repo_size=2048))
     assert [r.name for r in kept] == ["dpdata"]
     assert set(skipped) == {"lammps", "sciencepedia"}
     assert all(isinstance(v, str) and v for v in skipped.values())
+
+
+def test_filter_repos_keeps_huge_repo_by_default():
+    # 默认不限体积时 sciencepedia 应进入统计
+    repos = [
+        mk_repo(name="dpdata", pushed="2026-07-01T00:00:00Z"),
+        mk_repo(name="sciencepedia", size_mb=17563.2),
+    ]
+    kept, skipped = filter_repos(repos, mk_cfg())
+    assert {r.name for r in kept} == {"dpdata", "sciencepedia"}
+    assert skipped == {}
 
 
 # --- fetch_repos ---

@@ -52,7 +52,7 @@ def test_parse_args_defaults_match_spec():
     c = parse_args([], TODAY)
     assert c.org == "deepmodeling"
     assert c.include_forks == "all"
-    assert c.max_repo_size == 2048
+    assert c.max_repo_size == 0  # 0 = 不限体积，sciencepedia 默认纳入
     assert c.count_lines is False
     assert c.exclude_bots is False
     assert c.no_fetch is False

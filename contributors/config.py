@@ -113,7 +113,13 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     p.add_argument(
         "--include-forks", choices=["all", "self", "none"], default="all"
     )
-    p.add_argument("--max-repo-size", type=int, default=2048, help="MB")
+    # 默认 0 = 不限。统计只需 commit 元数据，克隆走 --filter=blob:none，
+    # 实际下载量与仓库标称体积无关（实测 sciencepedia 标称 17.5 GB，
+    # 无 blob 克隆仅 412 MB），按标称体积设闸门是误伤。
+    p.add_argument(
+        "--max-repo-size", type=int, default=0,
+        help="MB，超过则跳过；0 表示不限（默认）",
+    )
     p.add_argument("--repos", default="", help="只跑指定仓库，逗号分隔")
     p.add_argument("--count-lines", action="store_true")
     p.add_argument(

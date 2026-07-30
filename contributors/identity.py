@@ -39,6 +39,15 @@ AI_ASSISTANT_LOGINS = {
     "codex",
 }
 
+# 人工确认的 email → login 映射。仅用于自动归并无法覆盖的情形，
+# 每条都必须有可核验的依据，写在注释里 —— 这是唯一绕过自动判定的入口，
+# 误加一条就会把两个人合成一个。
+MANUAL_EMAIL_LOGIN = {
+    # 拼写笔误：pku.eud.cn 应为 pku.edu.cn，与 mohanchen@pku.edu.cn
+    # 属同一人。该地址下 750 次提交署名 abacus_fixer，本无关联账号。
+    "mohanchen@pku.eud.cn": "mohanchen",
+}
+
 _NOREPLY_RE = re.compile(
     r"^(?:\d+\+)?([A-Za-z0-9._-]+(?:\[bot\])?)@" + re.escape(NOREPLY_DOMAIN) + r"$",
     re.IGNORECASE,
@@ -78,6 +87,19 @@ def is_bot(login: Optional[str], name: str = "", email: str = "") -> bool:
     return False
 
 
+def is_marked_bot(login: Optional[str], name: str = "") -> bool:
+    """账号 id 里是否显式带 [bot] 后缀 —— GitHub 平台自己打的标记。
+
+    与 is_bot 的区别：is_bot 还包含 BOT_BLOCKLIST 的推断结果（njzjz-bot、
+    codecov 这类确是机器人但 id 里没有后缀）。分两列输出，是为了让人能
+    区分「平台确认」与「我们推断」——后者才有误判风险，需要人工复核。
+    """
+    for c in (login, name):
+        if c and c.strip().lower().endswith("[bot]"):
+            return True
+    return False
+
+
 def is_ai_assistant(login: Optional[str], name: str = "") -> bool:
     """识别 AI 代码助手账号，用于标注而非排除。
 
@@ -107,6 +129,10 @@ class IdentityResolver:
     def __init__(self) -> None:
         self._email_to_login: dict = {}
         self._unmatched: set = set()
+        # 人工映射先装载。API 侧后来的 add_mapping 会覆盖同一邮箱 ——
+        # 这是有意的：GraphQL 拿到的账号归属比人工记录更权威。
+        for email, login in MANUAL_EMAIL_LOGIN.items():
+            self.add_mapping(email, login)
 
     def add_mapping(self, email: str, login: Optional[str]) -> None:
         e = normalize_email(email)

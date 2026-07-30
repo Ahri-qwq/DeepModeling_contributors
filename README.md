@@ -40,8 +40,8 @@ python -m contributors --since 2026-01-01 --no-fetch
 # 统计代码增删行数（默认关闭，需完整克隆约 7 倍磁盘）
 python -m contributors --count-lines
 
-# 纳入超大仓库
-python -m contributors --max-repo-size 20000
+# 磁盘紧张时排除超大仓库（默认不限，全部纳入）
+python -m contributors --max-repo-size 2048
 ```
 
 ### 参数表
@@ -53,7 +53,7 @@ python -m contributors --max-repo-size 20000
 | `--until` | 今天 | 结束日期 `YYYY-MM-DD`，含当天 |
 | `--months` | — | 等价 `--since <N 个月前>` |
 | `--include-forks` | `all` | `all` / `self`（仅生态内部）/ `none` |
-| `--max-repo-size` | `2048` | 仓库体积上限（MB），超出跳过 |
+| `--max-repo-size` | `0` | 仓库体积上限（MB），`0` 为不限；仅磁盘紧张时设值 |
 | `--repos` | — | 只跑指定仓库，逗号分隔 |
 | `--count-lines` | 关 | 统计代码增删行数 |
 | `--no-fetch` | 关 | 零网络，纯本地缓存重算。API 侧数据全部为空 |
@@ -162,6 +162,10 @@ API 响应按天缓存（`./.cache/api/<repo>-<日期>.json`），同日重跑�
 
 `--count-lines` 需要完整克隆（约 7 倍体积）；不带该参数用 blobless 部分克隆。
 两者切换自动检测并重建缓存。
+
+GitHub API 报的仓库体积与实际下载量无关：统计只读 commit 元数据，
+blobless 克隆不拉文件内容。sciencepedia 标称 17.5 GB，缓存实占 412 MB。
+因此 `--max-repo-size` 默认不限，不要用它来"省流量"。
 
 ## 统计口径
 

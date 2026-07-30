@@ -157,17 +157,29 @@ def test_api_only_contributor_appears_with_zero_commits(tiny_repo):
     assert r.pr_reviewed == 8
 
 
-def test_bots_are_in_main_rows_by_default(tiny_repo):
-    # Q9 用户裁决：不排除任何账号，只标注。删掉比加回去简单，
-    # 且排除有误判风险（njzjz-bot 等可能是个人的自动化）
+def test_marked_bots_excluded_from_main_rows(tiny_repo):
+    # id 里显式带 [bot] 的是 GitHub 平台标记，可直接采信，默认剔除主表
     cfg = mk_cfg(tiny_repo)
     cm = CacheManager(cfg.cache_dir)
     gstats = collect_git_stats(mk_repo(), cm, cfg)
     resolver = IdentityResolver()
     resolver.add_mapping("alice@example.com", "dependabot[bot]")
     rows, bots = build_rows(mk_repo(), gstats, {}, resolver, cfg)
-    assert any(r.login == "dependabot[bot]" for r in rows)
-    assert any(r.is_bot for r in rows if r.login == "dependabot[bot]")
+    assert not any(r.login == "dependabot[bot]" for r in rows)
+    # 但仍要出现在 bots.csv 对照表里
+    assert any(r.login == "dependabot[bot]" for r in bots)
+
+
+def test_inferred_bots_stay_in_main_rows_by_default(tiny_repo):
+    # 黑名单推断的 bot（id 里无 [bot]）有误判风险，默认保留只作标注
+    cfg = mk_cfg(tiny_repo)
+    cm = CacheManager(cfg.cache_dir)
+    gstats = collect_git_stats(mk_repo(), cm, cfg)
+    resolver = IdentityResolver()
+    resolver.add_mapping("alice@example.com", "njzjz-bot")
+    rows, bots = build_rows(mk_repo(), gstats, {}, resolver, cfg)
+    assert any(r.login == "njzjz-bot" for r in rows)
+    assert any(r.is_bot for r in rows if r.login == "njzjz-bot")
 
 
 def test_bots_csv_still_lists_bots_when_kept_in_main(tiny_repo):
@@ -318,12 +330,27 @@ def test_ai_assisted_csv_is_empty_without_ai_commits(tiny_repo, monkeypatch):
         assert list(_csv.DictReader(f)) == []
 
 
+def test_run_meta_records_marked_bot_exclusion(tiny_repo, monkeypatch):
+    # 显式 [bot] 的剔除是恒定行为，与 --exclude-bots 无关。
+    # 两个字段必须分开，否则读 meta 的人会以为主表里还有 [bot] 账号
+    import json
+    cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    m.run(cfg, token="fake")
+    meta = json.loads(
+        (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["marked_bots_excluded_from_main"] is True
+    # 未加 --exclude-bots 时，推断出的 bot 仍在主表
+    assert meta["inferred_bots_excluded_from_main"] is False
+
+
 def test_run_meta_records_skipped_repos(tiny_repo, monkeypatch):
     import json
     big = RepoInfo(name="huge", default_branch="main", size_mb=99999.0,
                    pushed_at="2026-07-01T00:00:00Z", is_fork=False,
                    upstream=None, upstream_family=None, archived=False)
-    cfg = mk_cfg(tiny_repo, no_fetch=True)
+    # 显式设限才会触发体积跳过（默认 0 = 不限）
+    cfg = mk_cfg(tiny_repo, no_fetch=True, max_repo_size=2048)
     m = _patch_network(monkeypatch, [mk_repo(), big], cfg)
     m.run(cfg, token="fake")
     meta = json.loads(

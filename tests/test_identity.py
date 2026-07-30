@@ -1,6 +1,6 @@
 import pytest
 from contributors.identity import (
-    parse_noreply_login, is_ai_assistant, is_bot, normalize_email,
+    parse_noreply_login, is_ai_assistant, is_bot, is_marked_bot, normalize_email,
     IdentityResolver,
 )
 
@@ -239,3 +239,66 @@ def test_merge_key_with_explicit_login_and_name_login_takes_priority():
     r = IdentityResolver()
     key = r.merge_key("", "bob", "Zhang San")
     assert key == "login:bob"
+
+
+# --- is_marked_bot：只认 id 里显式的 [bot] 后缀，这类直接不进主表 ---
+
+def test_marked_bot_requires_explicit_suffix():
+    assert is_marked_bot("dependabot[bot]", "dependabot[bot]") is True
+    assert is_marked_bot("github-actions[bot]", "") is True
+    # name 侧带后缀也算（commit 与 API 两侧后缀不一致的情况实测存在）
+    assert is_marked_bot(None, "coderabbitai[bot]") is True
+
+
+def test_blocklisted_bot_without_suffix_is_not_marked():
+    # njzjz-bot / codecov 是 bot，但 id 里没有 [bot]，靠黑名单推断。
+    # 这类有误判风险，保留在主表只作标注，不能自动剔除。
+    assert is_marked_bot("njzjz-bot", "njzjz-bot") is False
+    assert is_marked_bot("codecov", "") is False
+    assert is_marked_bot("renovate", "") is False
+
+
+# --- 人工确认的映射（用户确认：abacus_fixer 应并入 mohanchen）---
+
+def test_manual_mapping_loaded_on_init():
+    # 无需任何 add_mapping 调用即生效
+    r = IdentityResolver()
+    assert r.resolve("mohanchen@pku.eud.cn") == "mohanchen"
+
+
+def test_manual_mapping_merges_typo_email_with_correct_one():
+    # pku.eud.cn 是 pku.edu.cn 的笔误，两者应归并为同一人
+    r = IdentityResolver()
+    r.add_mapping("mohanchen@pku.edu.cn", "mohanchen")
+    assert r.merge_key("mohanchen@pku.eud.cn", None) == \
+        r.merge_key("mohanchen@pku.edu.cn", None)
+
+
+def test_manual_mapped_email_not_in_unmatched():
+    r = IdentityResolver()
+    r.merge_key("mohanchen@pku.eud.cn", None, "abacus_fixer")
+    assert r.unmatched_emails() == set()
+
+
+def test_api_mapping_overrides_manual():
+    # GraphQL 拿到的归属比人工记录权威，同一邮箱应被覆盖
+    r = IdentityResolver()
+    r.add_mapping("mohanchen@pku.eud.cn", "someone-else")
+    assert r.resolve("mohanchen@pku.eud.cn") == "someone-else"
+
+
+def test_manual_mapping_does_not_affect_other_emails():
+    r = IdentityResolver()
+    assert r.merge_key("unrelated@pku.edu.cn", None) == \
+        "email:unrelated@pku.edu.cn"
+
+
+def test_marked_bot_implies_is_bot():
+    # 凡 marked 必然也是 bot，反之不然
+    for login in ("dependabot[bot]", "github-actions[bot]", "Copilot[bot]"):
+        assert is_bot(login, "") is True
+
+
+def test_real_user_with_bracket_text_not_marked():
+    assert is_marked_bot("botelho", "Botelho") is False
+    assert is_marked_bot(None, "Someone (bot fan)") is False

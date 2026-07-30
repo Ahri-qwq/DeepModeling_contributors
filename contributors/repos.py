@@ -67,7 +67,8 @@ def should_skip(repo: RepoInfo, cfg) -> Optional[str]:
                 "已按 --include-forks=self 排除"
             )
 
-    if repo.size_mb > cfg.max_repo_size:
+    # max_repo_size <= 0 表示不限，此闸门整体关闭
+    if cfg.max_repo_size > 0 and repo.size_mb > cfg.max_repo_size:
         return (
             f"体积 {repo.size_mb:.0f} MB 超过 --max-repo-size "
             f"{cfg.max_repo_size} MB"
