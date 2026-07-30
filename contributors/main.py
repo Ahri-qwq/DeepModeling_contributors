@@ -7,6 +7,7 @@ import csv
 import json
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from .config import parse_args
 from .git_stats import (
     GitError, clone_or_fetch, collect_git_stats, count_upstream_excluded,
 )
-from .identity import IdentityResolver, is_bot
+from .identity import IdentityResolver, is_ai_assistant, is_bot
 from .models import ApiStats
 from .output import (
     SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
@@ -91,6 +92,9 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
         email = ";".join(sorted(b["emails"]))
         # 只依据 login 与 name 判定，不查邮箱（邮箱本地部分会误伤真人）
         bot = is_bot(login, name)
+        # AI 代码助手与 CI 机器人分列：前者是 AI 写的代码，后者是自动化
+        # 流程。两类的人工判断依据不同，混成一列会让核对无从下手。
+        ai = is_ai_assistant(login, name)
         row = Row(
             repo=repo.name,
             login=login or "",
@@ -108,17 +112,25 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
             upstream=repo.upstream or "",
             upstream_family=repo.upstream_family or "",
             is_bot=bot,
+            is_ai_assistant=ai,
             additions=gs.additions if gs else None,
             deletions=gs.deletions if gs else None,
             files_changed=gs.files_changed if gs else None,
             additions_raw=gs.additions_raw if gs else None,
             deletions_raw=gs.deletions_raw if gs else None,
         )
-        (bots if bot else rows).append(row)
+        rows.append(row)
+        # bots.csv 是对照表，与主表去留无关：即使 bot 留在主表，
+        # 也要给出「哪些被识别为机器人」的清单供人工核对误判。
+        # 存副本而非同一对象：两个列表各自要跑 merge_by_name，共享对象会
+        # 让一侧的合并把另一侧的计数改坏（或让已合并掉的行重复计数）
+        if bot:
+            bots.append(replace(row))
 
-    if cfg.include_bots:
-        rows.extend(bots)
-        bots = []
+    # 默认全部保留在主表（用户 Q9 裁决：删掉比加回去简单，排除有误判风险）。
+    # --exclude-bots 才移出，此时 bots.csv 仍保留同样的行
+    if cfg.exclude_bots:
+        rows = [r for r in rows if not r.is_bot]
     return rows, bots
 
 
@@ -370,7 +382,13 @@ def _write_meta(all_repos, kept, skipped, failures, rows, bots, resolver,
         "skipped": skipped,
         "failures": failures,
         "contributors": len(summarize(rows)),
-        "bots_excluded": len({r.login for r in bots}),
+        # 语义随 Q9 裁决改变：默认只标注不排除，故这里是「被标注的数量」。
+        # 真正被移出主表只发生在 --exclude-bots 下
+        "bots_flagged": len({r.login for r in bots}),
+        "bots_excluded_from_main": cfg.exclude_bots,
+        "ai_assistants_flagged": len(
+            {r.login for r in rows if r.is_ai_assistant}
+        ),
         "unmatched_emails": len(resolver.unmatched_emails()),
         "api_points_spent": getattr(client, "spent", 0),
         "api_points_remaining": getattr(client, "remaining", None),

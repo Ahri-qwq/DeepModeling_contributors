@@ -40,6 +40,34 @@ def test_base_columns_match_spec_order():
         assert c in BASE_COLUMNS
 
 
+def test_is_ai_assistant_is_a_base_column():
+    # Q8：AI 助手保留在主表，用独立列标注而非改写 login 文本
+    # （改文本会污染 github_url 并破坏人工核对）
+    assert "is_ai_assistant" in BASE_COLUMNS
+
+
+def test_is_ai_assistant_sits_next_to_is_bot():
+    # 两列相邻便于人工同时筛选这两类非自然人账号
+    assert BASE_COLUMNS.index("is_ai_assistant") == \
+        BASE_COLUMNS.index("is_bot") + 1
+
+
+def test_ai_flag_survives_csv_roundtrip(tmp_path):
+    p = tmp_path / "o.csv"
+    write_csv([mk_row(login="Copilot", is_ai_assistant=True)], p,
+              mk_cfg(tmp_path))
+    with p.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["is_ai_assistant"] == "True"
+
+
+def test_summarize_preserves_ai_flag(tmp_path):
+    rows = [mk_row(repo="a", login="Copilot", is_ai_assistant=True),
+            mk_row(repo="b", login="Copilot", is_ai_assistant=True)]
+    out = summarize(rows)
+    assert len(out) == 1 and out[0].is_ai_assistant is True
+
+
 def test_line_columns_absent_from_base():
     for c in LINE_COLUMNS:
         assert c not in BASE_COLUMNS

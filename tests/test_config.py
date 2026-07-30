@@ -54,13 +54,18 @@ def test_parse_args_defaults_match_spec():
     assert c.include_forks == "all"
     assert c.max_repo_size == 2048
     assert c.count_lines is False
-    assert c.include_bots is False
+    assert c.exclude_bots is False
     assert c.no_fetch is False
     assert c.refresh is False
     assert c.fmt == "all"
     assert c.jobs == 4
     assert c.verbose is False
     assert c.repos == []
+
+
+def test_exclude_bots_flag_parsed():
+    # Q9 裁决后语义反转：默认全部保留，需要时才显式排除
+    assert parse_args(["--exclude-bots"], TODAY).exclude_bots is True
 
 
 def test_parse_args_repos_splits_on_comma():

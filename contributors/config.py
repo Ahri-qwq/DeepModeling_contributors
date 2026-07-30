@@ -90,7 +90,7 @@ class Config:
     exclude_paths: list = field(default_factory=list)
     no_fetch: bool = False
     refresh: bool = False
-    include_bots: bool = False
+    exclude_bots: bool = False
     cache_dir: str = "./.cache"
     out_dir: str = "./output"
     fmt: str = "all"
@@ -121,7 +121,10 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     )
     p.add_argument("--no-fetch", action="store_true", help="零网络，纯本地缓存")
     p.add_argument("--refresh", action="store_true", help="强制重新 fetch")
-    p.add_argument("--include-bots", action="store_true")
+    p.add_argument(
+        "--exclude-bots", action="store_true",
+        help="把 is_bot 账号移出主表（默认保留并标注，删掉比加回去简单）",
+    )
     p.add_argument("--cache-dir", default="./.cache")
     p.add_argument("--out-dir", default="./output")
     p.add_argument(
@@ -145,7 +148,7 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         exclude_paths=DEFAULT_EXCLUDE_PATHS + extra,
         no_fetch=a.no_fetch,
         refresh=a.refresh,
-        include_bots=a.include_bots,
+        exclude_bots=a.exclude_bots,
         cache_dir=a.cache_dir,
         out_dir=a.out_dir,
         fmt=a.fmt,

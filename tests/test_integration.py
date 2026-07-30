@@ -157,7 +157,22 @@ def test_api_only_contributor_appears_with_zero_commits(tiny_repo):
     assert r.pr_reviewed == 8
 
 
-def test_bots_are_separated_from_main_rows(tiny_repo):
+def test_bots_are_in_main_rows_by_default(tiny_repo):
+    # Q9 用户裁决：不排除任何账号，只标注。删掉比加回去简单，
+    # 且排除有误判风险（njzjz-bot 等可能是个人的自动化）
+    cfg = mk_cfg(tiny_repo)
+    cm = CacheManager(cfg.cache_dir)
+    gstats = collect_git_stats(mk_repo(), cm, cfg)
+    resolver = IdentityResolver()
+    resolver.add_mapping("alice@example.com", "dependabot[bot]")
+    rows, bots = build_rows(mk_repo(), gstats, {}, resolver, cfg)
+    assert any(r.login == "dependabot[bot]" for r in rows)
+    assert any(r.is_bot for r in rows if r.login == "dependabot[bot]")
+
+
+def test_bots_csv_still_lists_bots_when_kept_in_main(tiny_repo):
+    # 主表保留不代表放弃对照表：bots.csv 必须照旧输出供人工核对，
+    # 否则用户拿不到「哪些是机器人」的清单
     cfg = mk_cfg(tiny_repo)
     cm = CacheManager(cfg.cache_dir)
     gstats = collect_git_stats(mk_repo(), cm, cfg)
@@ -165,18 +180,43 @@ def test_bots_are_separated_from_main_rows(tiny_repo):
     resolver.add_mapping("alice@example.com", "dependabot[bot]")
     rows, bots = build_rows(mk_repo(), gstats, {}, resolver, cfg)
     assert any(r.login == "dependabot[bot]" for r in bots)
-    assert not any(r.login == "dependabot[bot]" for r in rows)
 
 
-def test_include_bots_puts_them_back_in_main_rows(tiny_repo):
-    cfg = mk_cfg(tiny_repo, include_bots=True)
+def test_exclude_bots_removes_them_from_main_rows(tiny_repo):
+    cfg = mk_cfg(tiny_repo, exclude_bots=True)
     cm = CacheManager(cfg.cache_dir)
     gstats = collect_git_stats(mk_repo(), cm, cfg)
     resolver = IdentityResolver()
     resolver.add_mapping("alice@example.com", "dependabot[bot]")
     rows, bots = build_rows(mk_repo(), gstats, {}, resolver, cfg)
-    assert any(r.login == "dependabot[bot]" for r in rows)
-    assert bots == []
+    assert not any(r.login == "dependabot[bot]" for r in rows)
+    assert any(r.login == "dependabot[bot]" for r in bots)
+
+
+def test_ai_assistant_flagged_and_kept_in_main_rows(tiny_repo):
+    # Q8：Copilot 保留在主表，is_ai_assistant 标注；不进 bots.csv，
+    # 因为它不是 CI 自动化，人工判断依据不同
+    cfg = mk_cfg(tiny_repo)
+    cm = CacheManager(cfg.cache_dir)
+    gstats = collect_git_stats(mk_repo(), cm, cfg)
+    resolver = IdentityResolver()
+    resolver.add_mapping("alice@example.com", "Copilot")
+    rows, bots = build_rows(mk_repo(), gstats, {}, resolver, cfg)
+    cop = [r for r in rows if r.login == "Copilot"][0]
+    assert cop.is_ai_assistant is True
+    assert cop.is_bot is False
+    assert not any(r.login == "Copilot" for r in bots)
+
+
+def test_ai_assistant_survives_exclude_bots(tiny_repo):
+    # --exclude-bots 只排 CI 机器人，不该顺手把 AI 助手也排掉
+    cfg = mk_cfg(tiny_repo, exclude_bots=True)
+    cm = CacheManager(cfg.cache_dir)
+    gstats = collect_git_stats(mk_repo(), cm, cfg)
+    resolver = IdentityResolver()
+    resolver.add_mapping("alice@example.com", "Copilot")
+    rows, _ = build_rows(mk_repo(), gstats, {}, resolver, cfg)
+    assert any(r.login == "Copilot" for r in rows)
 
 
 # --- 完整 run()，用 monkeypatch 隔离网络 ---

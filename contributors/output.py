@@ -16,7 +16,7 @@ BASE_COLUMNS = [
     "commits", "commits_not_in_upstream",
     "pr_created", "pr_merged", "pr_reviewed",
     "issue_created", "issue_commented",
-    "is_fork", "upstream", "upstream_family", "is_bot",
+    "is_fork", "upstream", "upstream_family", "is_bot", "is_ai_assistant",
 ]
 
 LINE_COLUMNS = [
@@ -55,6 +55,7 @@ class Row:
     upstream: str
     upstream_family: str
     is_bot: bool
+    is_ai_assistant: bool = False
     additions: Optional[int] = None
     deletions: Optional[int] = None
     files_changed: Optional[int] = None

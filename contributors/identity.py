@@ -26,6 +26,19 @@ BOT_BLOCKLIST = {
     "deepmodeling-bot",
 }
 
+# AI 代码助手账号。与 BOT_BLOCKLIST 刻意分开：前者是 AI 写的代码，
+# 后者是 CI 自动化（升依赖、跑格式化），人工核对时判断依据完全不同。
+# 两者都不排除、只标注，由人决定去留（用户 Q8/Q9 裁决）。
+AI_ASSISTANT_LOGINS = {
+    "copilot",
+    "copilot-swe-agent",
+    "copilot-pull-request-reviewer",
+    "claude",
+    "devin-ai-integration",
+    "cursoragent",
+    "codex",
+}
+
 _NOREPLY_RE = re.compile(
     r"^(?:\d+\+)?([A-Za-z0-9._-]+(?:\[bot\])?)@" + re.escape(NOREPLY_DOMAIN) + r"$",
     re.IGNORECASE,
@@ -61,6 +74,24 @@ def is_bot(login: Optional[str], name: str = "", email: str = "") -> bool:
         if low.endswith("[bot]"):
             return True
         if low in BOT_BLOCKLIST:
+            return True
+    return False
+
+
+def is_ai_assistant(login: Optional[str], name: str = "") -> bool:
+    """识别 AI 代码助手账号，用于标注而非排除。
+
+    与 is_bot 同样禁止子串匹配：copilotkid、mycopilot 都可能是真人。
+    只做精确全等，并容忍 GraphQL 侧返回的 [bot] 后缀变体
+    （实测同一助手在 commit 与 API 两侧的账号名后缀不一致）。
+    """
+    for c in (login, name):
+        if not c:
+            continue
+        low = c.strip().lower()
+        if low.endswith("[bot]"):
+            low = low[:-len("[bot]")]
+        if low in AI_ASSISTANT_LOGINS:
             return True
     return False
 

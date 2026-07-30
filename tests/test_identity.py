@@ -1,6 +1,7 @@
 import pytest
 from contributors.identity import (
-    parse_noreply_login, is_bot, normalize_email, IdentityResolver,
+    parse_noreply_login, is_ai_assistant, is_bot, normalize_email,
+    IdentityResolver,
 )
 
 
@@ -72,6 +73,50 @@ def test_blocklist_still_applies_to_login():
 def test_name_bracket_bot_still_detected():
     # name 中的 [bot] 后缀仍应被检测
     assert is_bot(None, "dependabot[bot]", "user@example.com") is True
+
+
+# --- AI 代码助手识别（Q8：保留在主表，单独标注）---
+
+@pytest.mark.parametrize("login", [
+    "Copilot",
+    "copilot",
+    "copilot-swe-agent",
+    "copilot-pull-request-reviewer",
+])
+def test_known_ai_assistant_logins(login):
+    # 实测抽查中这三个账号都有实际贡献量：Copilot 295 次提交、
+    # copilot-pull-request-reviewer 362 次评审、copilot-swe-agent 16 次 PR
+    assert is_ai_assistant(login, "") is True
+
+
+def test_ai_assistant_detected_from_name():
+    assert is_ai_assistant(None, "Copilot") is True
+
+
+def test_ai_assistant_matches_bracket_bot_variant():
+    # GraphQL 侧同一助手可能带 [bot] 后缀返回
+    assert is_ai_assistant("copilot-swe-agent[bot]", "") is True
+
+
+@pytest.mark.parametrize("login", ["copilotkid", "mycopilot", "Copilotov"])
+def test_real_users_containing_copilot_are_not_ai(login):
+    # 与 is_bot 同一条铁律：禁止子串匹配，避免误伤真人
+    assert is_ai_assistant(login, login) is False
+
+
+def test_normal_user_is_not_ai_assistant():
+    assert is_ai_assistant("njzjz", "Jinzhe Zeng") is False
+
+
+def test_ci_bot_is_not_ai_assistant():
+    # njzjz-bot / dependabot 是 CI 自动化，不是 AI 代码助手。
+    # 两类分列在 is_bot 与 is_ai_assistant，便于人工分别筛选
+    assert is_ai_assistant("njzjz-bot", "A bot of @njzjz") is False
+    assert is_ai_assistant("dependabot[bot]", "") is False
+
+
+def test_empty_input_is_not_ai_assistant():
+    assert is_ai_assistant(None, "") is False
 
 
 # --- 邮箱归一化 ---
