@@ -2,18 +2,40 @@
 
 整合 git commit 历史与 GitHub API（PR/Issue/Review/Comment），输出可用于感谢与表彰的贡献者名单。
 
+第一次在新机器上运行，请看 [`docs/新设备快速开始.md`](docs/新设备快速开始.md)。
+
+> **提交数有两个口径，分别成列。** `commits` 只数合并进主干的提交；
+> `commits_loose` 额外计入 PR 分支上的原始提交。用 squash 合并时同一份工作
+> 在两处各有一条记录，所以宽松口径含重复计数，而严格口径会漏掉署名邮箱与
+> GitHub 账号对不上的人。详见[提交数的两个口径](#提交数的两个口径)。
+
 > **适用时间范围：一年以内。**
 > fork 仓库的分类（哪些算社区自己的项目、哪些算外部项目）只对最近一年活跃的仓库经过人工确认。
 > 若把 `--since` 往前挪到一年以上，会有更多沉寂的 fork 进入统计流程，它们的 `upstream_family`
-> 判定未经确认，需要重新走一遍确认流程（见 `docs/2026-07-29-fork清单待确认.md`）。
+> 判定未经确认，需要重新走一遍确认流程。
+
+## 环境要求
+
+| 项 | 要求 | 原因 |
+|------|--------|------|
+| Python | 3.12 或更高 | `shutil.rmtree(onexc=...)` 在 3.12 才有 |
+| git | 任意近期版本 | 需在 PATH 中 |
+| GitHub token | `gh auth login` 或环境变量 | 仅用于 GitHub API |
 
 ## 安装
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt          # 仅运行时依赖
+pip install -r requirements-dev.txt      # 含测试依赖
 ```
 
-需要 **git** 和 **gh CLI**（或设置环境变量 `GITHUB_TOKEN` / `GH_TOKEN`）。
+也可以直接安装本项目，装完得到 `github-contributors` 命令：
+
+```bash
+pip install -e .        # 或 pip install -e ".[dev]" 带测试依赖
+```
+
+Token 查找顺序：环境变量 `GITHUB_TOKEN` → `GH_TOKEN` → `gh auth token`。
 Token 仅用于 GitHub API；git clone 走匿名访问，凭据不会写入缓存目录。
 
 ## 用法
@@ -62,8 +84,82 @@ python -m contributors --max-repo-size 2048
 | `--cache-dir` | `./.cache` | 缓存目录 |
 | `--out-dir` | `./output` | 输出目录 |
 | `--format` | `all` | `csv` / `md` / `json` / `all` |
+| `--exclude-paths` | — | 行数统计的额外排除模式，逗号分隔，追加到内置列表 |
+| `--jobs` | `4` | 尚未实现，传入无效果 |
+| `--verbose` | 关 | 尚未实现，传入无效果 |
 
 > `--no-fetch` 完全跳过 GitHub API，PR/Issue/Review/Comment 各列全为 0，email→login 映射仅靠 noreply 邮箱正则解析。适用于改时间窗快速验证 commit 口径；出正式名单用完整跑法。
+
+## 项目结构
+
+```
+github_contributors/
+├── contributors/           # 源码
+│   ├── __main__.py         # 入口，python -m contributors
+│   ├── main.py             # 主流程编排、身份合并、报告生成
+│   ├── config.py           # CLI 参数解析、时间窗归一化
+│   ├── auth.py             # token 获取（环境变量 / gh CLI）
+│   ├── repos.py            # 仓库清单获取、fork 三分类、预筛
+│   ├── git_stats.py        # git 管线：clone/fetch、log 解析、行数统计
+│   ├── api_stats.py        # API 管线：GraphQL 查询、分页、限额退避
+│   ├── identity.py         # 身份归并、bot / AI 助手识别
+│   ├── cache.py            # 缓存管理、增量判断、磁盘预检
+│   ├── models.py           # 共享数据结构（避免循环导入）
+│   └── output.py           # CSV / Markdown / JSON 输出
+├── tests/                  # 299 个测试，与源码模块一一对应
+├── docs/                   # 新设备快速开始
+├── .cache/                 # 运行时缓存（已忽略）
+└── output*/                # 结果目录（已忽略）
+```
+
+### 模块职责与依赖方向
+
+依赖是单向的，没有循环：
+
+```
+__main__ → main → ┬→ config
+                  ├→ auth
+                  ├→ repos    ─┐
+                  ├→ git_stats ├→ models
+                  ├→ api_stats ┤
+                  ├→ identity ─┘
+                  ├→ cache
+                  └→ output
+```
+
+`models.py` 只放数据类，被多个模块共用，本身不 import 任何业务模块 —— 
+这是为了避免 `git_stats` 与 `api_stats` 互相引用。
+
+| 模块 | 关键职责 | 易错点 |
+|------|----------|--------|
+| `config.py` | 三种时间写法归一成 UTC 半开区间 `[since, until)` | 对外闭区间、对内半开，输出时须减一天还原 |
+| `git_stats.py` | 镜像克隆、`git log` 解析、上游排除 | 时间过滤必须在 Python 侧按 author date 做 |
+| `api_stats.py` | 按仓库分页而非按用户查询，顺带取 email→login | 子连接固定取 50 条，未检测截断 |
+| `identity.py` | email→login 归并、bot 判定 | 严禁子串匹配，`botelho` 是真人 |
+| `cache.py` | 增量判断、Windows 只读位处理 | `rmtree` 必须用 `onexc` 清只读位 |
+| `main.py` | 编排、跨邮箱合并、同名合并、报告 | 单仓库失败不得中断整体 |
+| `output.py` | 三种格式输出 | CSV 需 BOM，Markdown 表格内禁止加粗 |
+
+### 主流程时序
+
+`main.run()` 的执行顺序：
+
+1. `_load_repos` 取仓库清单（`--no-fetch` 时读缓存）
+2. `filter_repos` 按 fork 类型、体积、`pushed_at` 预筛
+3. 磁盘空间预检
+4. 逐仓库循环 `process_repo`，每个包在独立 `try` 里：
+   - `clone_or_fetch` 建立或更新缓存
+   - `collect_api_stats` 取 PR/Issue 并回填 email→login 映射
+   - `collect_git_stats` 解析 commit
+   - `count_upstream_excluded`（仅 fork）
+   - `collect_ai_coauthors` 追溯 AI 指派人
+   - `build_rows` 合并两侧数据成行
+   - `merge_by_name` 同仓库内按姓名合并被拆开的身份
+5. `_write_outputs` 落盘全部文件
+6. `_write_meta` 写运行元数据
+
+API 管线先于 git 管线执行是有意的：GraphQL 顺带取回的 email→login 映射
+要供同一仓库的 git 侧归并使用，也累积供后续仓库使用。
 
 ## 工作原理
 
@@ -106,7 +202,8 @@ email→login 映射的来源（按优先级）：
 | `name` | str | 姓名（优先 GitHub profile，回退 commit author name） |
 | `email` | str | 邮箱，多个以 `;` 分隔 |
 | `github_url` | str | 个人主页链接 |
-| `commits` | int | 窗口内 commit 数，按 SHA 去重，覆盖所有分支，排除合并提交 |
+| `commits` | int | 严格口径：只数合并进主干（分支与标签）的提交，排除合并提交，按 SHA 去重 |
+| `commits_loose` | int | 宽松口径：主干 + PR 分支上主干不可达的提交。恒 ≥ `commits`，差值即 PR 分支提交数 |
 | `commits_not_in_upstream` | int | 仅 fork 有意义：排除上游已有提交后的数量。上游可达的提交记 0（实测 GPUMD 窗口内 638 次提交全部来自上游，该列为 0）。非 fork 时等于 `commits` |
 | `pr_created` | int | 创建的 PR 数 |
 | `pr_merged` | int | 其中已合并的 PR 数 |
@@ -124,6 +221,36 @@ email→login 映射的来源（按优先级）：
 删掉一行比事后发现漏了一个人再加回去容易得多。需要移出时用 `--exclude-bots`。
 
 开启 `--count-lines` 时追加：`additions`（新增，已过滤）、`deletions`（删除，已过滤）、`files_changed`（涉及文件数）、`additions_raw`（原始新增）、`deletions_raw`（原始删除）。关闭时这些列不出现。
+
+### 提交数的两个口径
+
+`commits` 与 `commits_loose` 是同一张表里的两列，每个人两列都有值，可以直接
+并排比较。两列都不是"正确答案"，各有一处已知偏差，取哪列取决于名单用途。
+
+差别来自 squash 合并。开发者在 PR 分支上提交若干次，合并时 GitHub 把它们
+压成一条新提交进主干 —— 新 SHA，原始提交仍留在 `refs/pull/<n>/head` 上。
+镜像克隆会把这些引用一并抓下来。
+
+| | `commits` | `commits_loose` |
+|---|---|---|
+| 数据范围 | 分支与标签 | 分支、标签，加 PR 分支上主干不可达的提交 |
+| squash 的工作 | 记 1 次（合并后那条） | 记 1 + N 次（合并后那条，加压缩前的 N 条） |
+| 只在 PR 分支署名的人 | 0 | 实际提交数 |
+| 偏差方向 | 偏低，可能漏人 | 偏高，含重复计数 |
+
+为什么严格口径会漏人：squash 后的提交，作者字段由 GitHub 按账号设置填写，
+常与开发者在本地 `git config` 里的邮箱不同。若这个邮箱没关联到 GitHub 账号，
+这个人在严格口径里就只剩合并后那一条的署名，而那条的邮箱可能已归到别人名下。
+实测 34 个仓库里有一半的邮箱在主干上零提交。
+
+选哪个：
+
+- 发感谢名单、排功劳先后 —— 用 `commits`，宁少算不错算。
+- 找"有没有人被漏掉" —— 看 `commits_loose` 明显大于 `commits` 的行，
+  这些人的工作大多发生在 PR 分支上，值得人工确认身份。
+- 两列都为 0 但 PR/Issue 列不为 0 —— 参与方式是评审和讨论，不是写代码。
+
+`summary.csv` 按 `commits` 降序排，也就是严格口径。
 
 ### 输出文件
 
@@ -170,12 +297,39 @@ blobless 克隆不拉文件内容。sciencepedia 标称 17.5 GB，缓存实占 4
 ## 统计口径
 
 - **时间**：闭区间（含两端），统一按 UTC 判定。提交以 **author date** 为准而非 committer date（rebase/cherry-pick/squash 会刷新后者，导致旧代码被算进新窗口）
-- **分支**：统计所有分支（`git log --all`），按 commit SHA 天然去重，排除合并提交（`--no-merges`）
-- **去重**：Git 侧按 SHA 去重；API 侧同一 PR 内多条 review 只记一次、PR 作者 review 自己的 PR 不计
+- **分支**：分两趟统计成两列。`commits` 走 `--branches --tags`（主干分支与标签）；`commits_loose` 额外一趟 `--all --not --branches --tags`，取 PR 分支上主干不可达的提交。两者均排除合并提交（`--no-merges`）。详见[提交数的两个口径](#提交数的两个口径)
+- **去重**：Git 侧按 SHA 去重 —— 只保证同一趟内同一 SHA 不重复。squash/cherry-pick 产生新 SHA，跨趟无法去重，这正是两个口径分列而非相加的原因；API 侧同一 PR 内多条 review 只记一次、PR 作者 review 自己的 PR 不计
 - **bot 识别**：仅按 login 与 name 判定。规则：[bot] 后缀 + 显式黑名单（`codecov`、`github-actions` 等）。禁止子串匹配（`botelho` 是真人）。默认保留在主表并标注 `is_bot`，`--exclude-bots` 可移出，同时始终输出 `bots.csv` 供核对误判
 - **AI 代码助手**：与 bot 同样只按 login 与 name 精确判定，禁止子串匹配（`copilotkid` 是真人）。默认保留在主表并标注 `is_ai_assistant`，不受 `--exclude-bots` 影响
 - **未关联身份**：查不到 GitHub 账号的邮箱不会丢弃，记入 `unmatched.csv`。漏掉一个真实贡献者比多算一个严重
 - **行数**：默认关闭，不宜用于排名。易被生成文件（lock 文件、vendored 代码、数据文件）污染；行数与贡献价值关联弱。已内置排除模式（`*.lock`、`vendor/**`、`*.npy` 等）并同时输出过滤前后两组数字
+
+## 已知问题
+
+以下几条不影响数据正确性，但值得知道。
+
+- `--jobs` 与 `--verbose` 已定义但未实现，传入无效果。
+- 首次运行的磁盘预检按 GitHub 标称体积估算，实测偏差最大 26 倍，
+  可能虚报需求把新用户挡下。绕法见快速开始文档。
+- GraphQL 子连接固定取 50 条不翻页。实测 34 个仓库：`commits` 子连接
+  408 处（2.3%）、`reviews` 18 处（0.1%）达到上限，两个 `comments`
+  子连接零撞限。影响可忽略 —— `commits` 只用于抓 email→login 映射不参与
+  计数，而 `pr_reviewed` 按 PR 内评审人去重，那 18 个 PR 去重后仅 2–7 人，
+  截断处已覆盖全部评审人。
+- `summarize` 跨仓库合并时姓名取首次出现值，少数人的显示名可能是 login
+  或 `root` 而非真名。仅影响展示，计数字段不受影响。
+
+## 开发
+
+```bash
+python -m pytest -q          # 299 个测试，不联网
+```
+
+Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。
+
+改动生产代码前先写失败测试 —— 项目一直按 TDD 走，历史上几个只在真实数据
+上才暴露的缺陷（时间窗按 committer date 过滤、身份被拆成两行、fork 上游
+排除失效、PR 分支提交重复计数）都是先写失败测试再修的。
 
 ## 常见问题
 

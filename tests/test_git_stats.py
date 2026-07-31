@@ -528,3 +528,184 @@ def test_ai_detected_by_login_not_email_substring():
                    "2026-07-07T00:00:00Z", "Co-authored-by: A <a@x.com>\n")
     traced, untraced = parse_ai_coauthors(text, **WINDOW)
     assert traced == {} and untraced == 0
+
+
+# --- 引用范围：主干 vs PR 分支 ---
+#
+# clone --mirror 会抓下 GitHub 服务端的 refs/pull/*/head，而 --all 遍历全部
+# 引用，于是 squash 合并的仓库里同一份工作被计两次（squash 产生新 SHA，SHA
+# 去重对它无效）。实测 wanghan-iapcm 因此从 130 次虚高到 1307 次。
+#
+# 但不能一律只数主干：署名邮箱没关联上 GitHub 账号的人，主干上可能一次提交
+# 都没有（squash 后的 author 用的是账号 noreply 邮箱），只数主干会让整行消失，
+# 贡献被静默抹除。故按 login 是否解析成功分流。
+
+
+def _rec(sha, name, email, when):
+    """构造一条 LOG_FORMAT 记录（主统计是行式，无 RECORD_TERM）。"""
+    return f"C{RECORD_SEP}{sha}{RECORD_SEP}{name}{RECORD_SEP}{email}" \
+           f"{RECORD_SEP}{when}\n"
+
+
+class _Resolver:
+    """只实现 resolve 的最小替身；真 IdentityResolver 需要 API 数据。"""
+
+    def __init__(self, mapping=None):
+        self._m = {k.lower(): v for k, v in (mapping or {}).items()}
+
+    def resolve(self, email):
+        return self._m.get((email or "").strip().lower())
+
+
+def _log_calls(monkeypatch, outputs=None):
+    """拦下 _run_git，记录每次调用的参数，按序返回预设输出。"""
+    import contributors.git_stats as gs
+    calls = []
+    seq = list(outputs or [])
+
+    def fake(args, **kw):
+        calls.append(args)
+        return seq.pop(0) if seq else ""
+
+    monkeypatch.setattr(gs, "_run_git", fake)
+    return calls
+
+
+def test_main_scope_excludes_pull_refs(tmp_path, monkeypatch):
+    """主干统计必须用 --branches --tags，不能用 --all。"""
+    import contributors.git_stats as gs
+    calls = _log_calls(monkeypatch)
+    gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    log = [c for c in calls if c and c[0] == "log"][0]
+    assert "--branches" in log and "--tags" in log
+    assert "--all" not in log
+
+
+def test_pr_branch_only_email_appears_with_zero_main(tmp_path, monkeypatch):
+    """只在 PR 分支上有提交的邮箱要成行：commits=0，宽松口径记满。
+
+    squash 后主干 author 是账号 noreply 邮箱，用其他邮箱署名的身份主干上
+    一次提交都没有。整行消失等于静默抹掉贡献，所以保留行、由 commits_loose
+    体现其工作量。
+    """
+    import contributors.git_stats as gs
+    main_log = _rec("s1", "Known", "known@x.com", "2026-03-01T00:00:00Z")
+    pr_log = (_rec("s2", "Ghost", "ghost@x.com", "2026-03-02T00:00:00Z")
+              + _rec("s3", "Ghost", "ghost@x.com", "2026-03-03T00:00:00Z"))
+    _log_calls(monkeypatch, [main_log, pr_log])
+    stats = gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    assert stats["ghost@x.com"].commits == 0
+    assert stats["ghost@x.com"].commits_loose == 2
+
+
+def test_resolved_email_also_gets_loose_count(tmp_path, monkeypatch):
+    """已关联 login 的人同样填两个字段，不再按身份区别对待。
+
+    旧实现对已关联邮箱跳过 PR 分支趟，导致 commits 与 commits_loose 无法
+    在同一行比较。两个字段各自恒定口径才能同表比较。
+    """
+    import contributors.git_stats as gs
+    main_log = _rec("s1", "Known", "known@x.com", "2026-03-01T00:00:00Z")
+    pr_log = (_rec("s2", "Known", "known@x.com", "2026-03-02T00:00:00Z")
+              + _rec("s3", "Known", "known@x.com", "2026-03-03T00:00:00Z"))
+    _log_calls(monkeypatch, [main_log, pr_log])
+    stats = gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    assert stats["known@x.com"].commits == 1
+    assert stats["known@x.com"].commits_loose == 3
+
+
+def test_pr_branch_pass_excludes_main_reachable(tmp_path, monkeypatch):
+    """第二趟必须带 --not --branches --tags，只取主干不可达的提交。"""
+    import contributors.git_stats as gs
+    calls = _log_calls(monkeypatch)
+    gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    logs = [c for c in calls if c and c[0] == "log"]
+    assert len(logs) == 2, "应跑两趟：主干 + PR 分支"
+    pr = logs[1]
+    i = pr.index("--not")
+    assert pr[i:i + 3] == ["--not", "--branches", "--tags"]
+
+
+def test_pr_pass_excludes_upstream_for_fork(tmp_path, monkeypatch):
+    """fork 的第二趟必须排除 upstream。
+
+    count_upstream_excluded 会留下 upstream remote，--all 于此把上游独有的
+    提交当成「PR 分支上的贡献」计入。实测 GPUMD 缓存里这样多算 79 次，
+    正确值是 0。
+    """
+    import contributors.git_stats as gs
+    calls = _log_calls(monkeypatch)
+    repo = _repo()
+    repo.is_fork = True
+    repo.upstream = "brucefan1983/GPUMD"
+    gs.collect_git_stats(repo, FakeCache(tmp_path), _cfg())
+    pr = [c for c in calls if c and c[0] == "log"][1]
+    assert "--remotes=upstream" in pr
+
+
+def test_pr_pass_keeps_upstream_refs_for_non_fork(tmp_path, monkeypatch):
+    """非 fork 没有 upstream remote，不该多传这个参数。"""
+    import contributors.git_stats as gs
+    calls = _log_calls(monkeypatch)
+    gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    pr = [c for c in calls if c and c[0] == "log"][1]
+    assert "--remotes=upstream" not in pr
+
+
+def test_loose_equals_main_when_no_pr_branch_commits(tmp_path, monkeypatch):
+    """PR 分支上没有该人提交时，两个字段相等。"""
+    import contributors.git_stats as gs
+    _log_calls(monkeypatch, [_rec("s1", "A", "a@x.com",
+                                  "2026-03-01T00:00:00Z"), ""])
+    stats = gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    assert stats["a@x.com"].commits == 1
+    assert stats["a@x.com"].commits_loose == 1
+
+
+def test_loose_sums_main_and_pr_branch(tmp_path, monkeypatch):
+    """既有主干又有 PR 分支提交时，宽松口径是两者之和。"""
+    import contributors.git_stats as gs
+    _log_calls(monkeypatch, [
+        _rec("s1", "G", "g@x.com", "2026-03-01T00:00:00Z"),
+        _rec("s2", "G", "g@x.com", "2026-03-02T00:00:00Z"),
+    ])
+    stats = gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())
+    assert stats["g@x.com"].commits == 1
+    assert stats["g@x.com"].commits_loose == 2
+
+
+def test_loose_never_below_main(tmp_path, monkeypatch):
+    """宽松口径是主干的超集，任何情况下不得小于 commits。"""
+    import contributors.git_stats as gs
+    _log_calls(monkeypatch, [
+        _rec("s1", "A", "a@x.com", "2026-03-01T00:00:00Z")
+        + _rec("s2", "A", "a@x.com", "2026-03-02T00:00:00Z"),
+        _rec("s3", "A", "a@x.com", "2026-03-03T00:00:00Z"),
+    ])
+    st = gs.collect_git_stats(_repo(), FakeCache(tmp_path), _cfg())["a@x.com"]
+    assert st.commits == 2 and st.commits_loose == 3
+    assert st.commits_loose >= st.commits
+
+
+def test_ai_coauthors_uses_main_scope(tmp_path, monkeypatch):
+    """AI 助手追溯同样不能数 PR 分支，否则 ai_assisted 跟着虚高。"""
+    import contributors.git_stats as gs
+    calls = _log_calls(monkeypatch)
+    gs.collect_ai_coauthors(_repo(), FakeCache(tmp_path), _cfg())
+    log = [c for c in calls if c and c[0] == "log"][0]
+    assert "--branches" in log and "--all" not in log
+
+
+def test_upstream_excluded_uses_main_scope(tmp_path, monkeypatch):
+    """fork 的上游排除统计也走主干，避免复用缓存时混入上游提交。"""
+    import contributors.git_stats as gs
+    from contributors.models import RepoInfo
+    fork = RepoInfo(name="GPUMD", default_branch="master", size_mb=10.0,
+                    pushed_at="2026-07-01T00:00:00Z", is_fork=True,
+                    upstream="brucefan1983/GPUMD", upstream_family=None,
+                    archived=False)
+    calls = _log_calls(monkeypatch)
+    gs.count_upstream_excluded(fork, FakeCache(tmp_path), _cfg())
+    log = [c for c in calls if c and c[0] == "log"][0]
+    assert "--branches" in log and "--tags" in log
+    assert "--all" not in log

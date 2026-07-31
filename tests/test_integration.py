@@ -400,14 +400,17 @@ def test_run_reports_unmatched_emails(tiny_repo, monkeypatch):
 # 只在同一仓库内、姓名完全相同（去空白、忽略大小写）时合并：跨仓库合并
 # 风险更高，而重名在单个仓库内的概率很低。
 
-def _row(login, name, email, commits, repo="tiny"):
+def _row(login, name, email, commits, repo="tiny", **kw):
     from contributors.output import Row
-    return Row(repo=repo, login=login, name=name, email=email,
-               github_url=f"https://github.com/{login}" if login else "",
-               commits=commits, commits_not_in_upstream=commits,
-               pr_created=0, pr_merged=0, pr_reviewed=0,
-               issue_created=0, issue_commented=0,
-               is_fork=False, upstream="", upstream_family="", is_bot=False)
+    d = dict(repo=repo, login=login, name=name, email=email,
+             github_url=f"https://github.com/{login}" if login else "",
+             commits=commits, commits_loose=commits,
+             commits_not_in_upstream=commits,
+             pr_created=0, pr_merged=0, pr_reviewed=0,
+             issue_created=0, issue_commented=0,
+             is_fork=False, upstream="", upstream_family="", is_bot=False)
+    d.update(kw)
+    return Row(**d)
 
 
 def test_merges_unlinked_row_into_matching_login_row():
@@ -418,6 +421,36 @@ def test_merges_unlinked_row_into_matching_login_row():
     assert len(out) == 1
     assert out[0].login == "wanghan-iapcm"
     assert out[0].commits == 1261
+
+
+def test_merge_sums_both_commit_fields_independently():
+    """合并时两个字段各自求和，不需要调整口径。
+
+    实测 wanghan-iapcm：主干 110 次，另一个邮箱只在 PR 分支上有 1165 次
+    squash 前的过程提交（主干 0）。合并后 commits 仍是 110 —— 严格口径
+    本就不含 PR 分支提交，squash 的重复计数进不来；宽松口径 110+1165
+    则是这个人的全部痕迹。
+    """
+    from contributors.main import merge_by_name
+    rows = [_row("wanghan-iapcm", "Han Wang", "a@noreply", 110,
+                 commits_loose=110),
+            _row("", "Han Wang", "wang_han@iapcm.ac.cn", 0,
+                 commits_loose=1165)]
+    out = merge_by_name(rows)
+    assert len(out) == 1
+    assert out[0].login == "wanghan-iapcm"
+    assert out[0].commits == 110, "严格口径不受 PR 分支影响"
+    assert out[0].commits_loose == 1275
+
+
+def test_merge_keeps_main_commits_of_unlinked_row():
+    """被合并行若自身也有主干提交，两个字段都要累加。"""
+    from contributors.main import merge_by_name
+    rows = [_row("alice", "Alice", "a@x.com", 10, commits_loose=10),
+            _row("", "Alice", "b@y.com", 2, commits_loose=7)]
+    out = merge_by_name(rows)
+    assert out[0].commits == 12
+    assert out[0].commits_loose == 17
 
 
 def test_merged_row_keeps_both_emails():

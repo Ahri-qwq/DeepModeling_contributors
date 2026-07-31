@@ -5,3 +5,16 @@ __pycache__/
 *.pyc
 .venv/
 *_run.log
+.pytest_cache/
+# 本机权限白名单与 worktree 状态，对他人无意义
+.claude/settings.local.json
+.claude/worktrees/
+# 打包产物
+build/
+dist/
+*.egg-info/
+# 内部过程文档：口径确认记录、审查报告、任务交接、含真实姓名邮箱的校验数据。
+# 只有 docs/新设备快速开始.md 对外发布
+docs/2026-*
+docs/确认问题.md
+docs/superpowers/

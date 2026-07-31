@@ -1,8 +1,11 @@
 """git 侧统计：mirror clone/fetch、git log 解析、行数统计。
 
 关键实现说明（均经实测验证）：
-- 用 git log --all 覆盖所有分支。它按 commit SHA 天然去重，已合并的
-  feature 分支不会让贡献者被重复计数（实测 dpdata 473 条 = 473 个唯一 SHA）。
+- 提交数分两趟统计，落成两个并列字段：commits 只走 --branches --tags
+  （主干口径），commits_loose 再加一趟 --all --not --branches --tags
+  取 PR 分支上主干不可达的提交（宽松口径）。不能只用 --all —— 详见
+  count_commits 的说明。SHA 去重只在同一趟内成立，squash 产生新 SHA，
+  故两趟必须分开数而不能相加去重。
 - --no-merges 排除合并提交，否则合并者会被算上整个分支的改动。
 - 时间过滤在 Python 侧做，不用 git 的 --since/--until：后者按 committer
   date 过滤且会截断遍历，两点都会算错窗口（详见 parse_git_log 的说明）。
@@ -225,8 +228,11 @@ def collect_ai_coauthors(repo, cm, cfg) -> tuple:
     与 collect_git_stats 分开跑：主统计不需要 body，而 body 会让输出
     体积上升一个量级，没必要为附表拖慢主流程。
     """
+    # 与 collect_git_stats 同口径走主干：PR 分支上的过程提交会让 AI 助手
+    # 的提交数跟着虚高，而 ai_assisted.csv 要反映的是真正合入的工作
     text = _run_git(
-        ["log", "--all", "--no-merges", f"--format={AI_LOG_FORMAT}"],
+        ["log", "--branches", "--tags", "--no-merges",
+         f"--format={AI_LOG_FORMAT}"],
         cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT,
     )
     return parse_ai_coauthors(text, since=cfg.since, until=cfg.until)
@@ -314,17 +320,78 @@ def clone_or_fetch(repo, cm, cfg) -> None:
 
 
 def collect_git_stats(repo, cm, cfg) -> dict:
-    """统计窗口内所有分支的提交，返回 {email: GitStats}。
+    """统计窗口内的提交，返回 {email: GitStats}。
 
     不向 git 传 --since/--until：那会按 committer date 过滤并截断遍历
     （详见 parse_git_log 的说明）。取全量后在 Python 侧按 author date 筛。
+
+    分两趟跑，因为引用范围不能一刀切：
+
+    第一趟只走 --branches --tags。不能用 --all —— clone --mirror 的 refspec
+    是 +refs/*:refs/*，GitHub 服务端还暴露 refs/pull/<n>/head，于是每个 PR
+    的原始分支都在本地。squash 合并会为同一份工作生成新 SHA，「按 SHA 去重」
+    拦不住它，同一份工作被计两次。实测 wanghan-iapcm 从 130 虚高到 1307。
+
+    第二趟走 PR 分支上主干不可达的提交，喂给 commits_loose。两趟结果写成
+    两个并列字段而不是一个字段加口径标注：
+
+      commits       严格口径，只数主干，不含 squash 的重复计数
+      commits_loose 宽松口径，主干 + PR 分支，含重复但不漏人
+
+    每个邮箱两个字段都填，与是否关联 login 无关 —— 口径由字段决定而非由
+    身份决定，这样同一行内两个数可以直接比较，跨行排序也不会混淆量纲。
+
+    只在 PR 分支上出现的邮箱 commits=0、commits_loose 记满。这类身份是
+    squash 的产物：主干 author 是账号 noreply 邮箱，其他署名邮箱主干上
+    一次提交都没有。运营在 unmatched.csv 里查证后可往 MANUAL_EMAIL_LOGIN
+    补一行，重跑即自动并入主行。
     """
-    args = ["log", "--all", "--no-merges", f"--format={LOG_FORMAT}"]
+    path = cm.repo_path(repo.name)
+    base = ["log", "--branches", "--tags", "--no-merges",
+            f"--format={LOG_FORMAT}"]
     if cfg.count_lines:
-        args.append("--numstat")
-    text = _run_git(args, cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT)
-    return parse_git_log(text, cfg.count_lines, cfg.exclude_paths,
-                         since=cfg.since, until=cfg.until)
+        base.append("--numstat")
+    text = _run_git(base, cwd=path, timeout=LOG_TIMEOUT)
+    stats = parse_git_log(text, cfg.count_lines, cfg.exclude_paths,
+                          since=cfg.since, until=cfg.until)
+
+    pr_args = ["log", "--all", "--no-merges", "--not", "--branches", "--tags",
+               f"--format={LOG_FORMAT}"]
+    if repo.is_fork and repo.upstream:
+        # count_upstream_excluded 会留下 upstream remote，--all 于此会把上游
+        # 独有的提交当成「PR 分支上的贡献」。实测 GPUMD 缓存里多算 79 次，
+        # 正确值是 0。首次运行 remote 还不存在，多传这个参数也无害。
+        pr_args.append("--remotes=upstream")
+    if cfg.count_lines:
+        pr_args.append("--numstat")
+    pr_text = _run_git(pr_args, cwd=path, timeout=LOG_TIMEOUT)
+    pr_stats = parse_git_log(pr_text, cfg.count_lines, cfg.exclude_paths,
+                             since=cfg.since, until=cfg.until)
+
+    # 主干侧先立起 commits_loose 的基线：宽松口径是主干的超集。
+    for st in stats.values():
+        st.commits_loose = st.commits
+
+    for email, extra in pr_stats.items():
+        cur = stats.get(email)
+        if cur is None:
+            # 只在 PR 分支上出现的邮箱：commits 留 0（主干确实没有它），
+            # 宽松口径记满。保留这一行，否则该身份的贡献被静默抹掉。
+            extra.commits_loose = extra.commits
+            extra.commits = 0
+            stats[email] = extra
+            continue
+        cur.commits_loose += extra.commits
+        cur.emails |= extra.emails
+        cur.names |= extra.names
+        # 行数增量归到宽松口径那一侧无处可放（additions 等只有一份），
+        # 这里累加意味着行数统计跟随宽松口径。commits 列不受影响。
+        for attr in ("additions", "deletions", "files_changed",
+                     "additions_raw", "deletions_raw"):
+            a, b = getattr(cur, attr), getattr(extra, attr)
+            if a is not None and b is not None:
+                setattr(cur, attr, a + b)
+    return stats
 
 
 def count_upstream_excluded(repo, cm, cfg) -> dict:
@@ -349,8 +416,11 @@ def count_upstream_excluded(repo, cm, cfg) -> dict:
             fetch_args.append("--filter=blob:none")
         fetch_args += ["upstream", "+refs/heads/*:refs/remotes/upstream/*"]
         _run_git(fetch_args, cwd=path, timeout=CLONE_TIMEOUT)
+    # --branches --tags 而非 --all：后者会遍历 refs/remotes/upstream/*，
+    # 从第二次运行起把上游独有的提交计进来（实测 GPUMD 多计 14 次），
+    # 也会把 refs/pull/* 上的过程提交算作本组织的工作
     text = _run_git([
-        "log", "--all", "--no-merges",
+        "log", "--branches", "--tags", "--no-merges",
         "--not", "--remotes=upstream",
         f"--format={LOG_FORMAT}",
     ], cwd=path, timeout=LOG_TIMEOUT)

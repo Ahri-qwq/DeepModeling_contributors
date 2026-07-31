@@ -13,7 +13,7 @@ from typing import Optional
 
 BASE_COLUMNS = [
     "repo", "login", "name", "email", "github_url",
-    "commits", "commits_not_in_upstream",
+    "commits", "commits_loose", "commits_not_in_upstream",
     "pr_created", "pr_merged", "pr_reviewed",
     "issue_created", "issue_commented",
     "is_fork", "upstream", "upstream_family", "is_bot", "is_ai_assistant",
@@ -32,7 +32,7 @@ LINE_CAVEAT = (
 
 # 跨仓库/跨邮箱累加时需要求和的计数字段。summarize 与 main.merge_by_name 共用
 SUM_FIELDS = (
-    "commits", "commits_not_in_upstream", "pr_created", "pr_merged",
+    "commits", "commits_loose", "commits_not_in_upstream", "pr_created", "pr_merged",
     "pr_reviewed", "issue_created", "issue_commented",
 )
 
@@ -45,6 +45,9 @@ class Row:
     email: str
     github_url: str
     commits: int
+    # 宽松口径（主干 + PR 分支）。与 commits 并列，两者口径各自恒定，
+    # 同行可直接比较。差值即 PR 分支上的提交数，含 squash 重复计数。
+    commits_loose: int
     commits_not_in_upstream: int
     pr_created: int
     pr_merged: int

@@ -60,7 +60,9 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
         if b["git"] is None:
             b["git"] = gs
         else:
+            # 两个字段口径各自恒定，都是可加量，直接分别求和
             b["git"].commits += gs.commits
+            b["git"].commits_loose += gs.commits_loose
             for f in _LINE_FIELDS:
                 a, c = getattr(b["git"], f), getattr(gs, f)
                 if a is not None or c is not None:
@@ -107,6 +109,7 @@ def build_rows(repo, git_stats: dict, api_stats: dict,
             email=email,
             github_url=f"https://github.com/{login}" if login else "",
             commits=gs.commits if gs else 0,
+            commits_loose=gs.commits_loose if gs else 0,
             commits_not_in_upstream=b["up"] if gs else 0,
             pr_created=b["api"].pr_created,
             pr_merged=b["api"].pr_merged,
@@ -174,6 +177,9 @@ def merge_by_name(rows: list) -> list:
             # 无匹配或有歧义，保持独立并留在 unmatched 供人工确认
             continue
         t = targets[0]
+        # 两个 commits 字段口径各自恒定，直接求和即可 —— 不需要在合并时
+        # 调整口径。commits 侧本就不含 PR 分支提交，squash 的重复计数进不来；
+        # commits_loose 侧本就该含，两行相加正是这个人的宽松总数。
         for f in SUM_FIELDS:
             setattr(t, f, getattr(t, f) + getattr(r, f))
         for f in _LINE_FIELDS:

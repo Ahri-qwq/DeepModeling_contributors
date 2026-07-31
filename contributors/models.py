@@ -23,6 +23,18 @@ class GitStats:
     commits_not_in_upstream: int = 0
     emails: set = field(default_factory=set)
     names: set = field(default_factory=set)
+    # 宽松口径：主干 + PR 分支（主干不可达）上的提交。
+    # 与 commits 并列而非替代 —— 两者口径各自恒定，同一行内可直接比较，
+    # 跨行排序也不会混淆量纲。
+    #
+    # 差值 commits_loose - commits 是该邮箱在 PR 分支上的提交数。用 squash
+    # 合并时同一份工作两处各有一条记录（PR 分支上是原始提交，主干上是新
+    # SHA 的 squash 提交），所以宽松口径含重复计数，不能当"真实工作量"。
+    #
+    # 反过来 commits 也会漏人：squash 后主干 author 是账号绑定的 noreply
+    # 邮箱，用其他邮箱署名的身份主干上可能一次提交都没有（实测 Zheyong Fan
+    # 主干 0、PR 分支 206）。两个字段都给出，由使用方按用途选口径。
+    commits_loose: int = 0
     # 以下仅在 --count-lines 开启时填充，否则保持 None（输出时整列省略）
     additions: Optional[int] = None
     deletions: Optional[int] = None

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "github-contributors"
+version = "1.0.0"
+description = "爬取 GitHub 组织的贡献者名单，整合 git 提交历史与 GitHub API"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Ahri-qwq" }]
+# 3.12 起才有 shutil.rmtree(onexc=...)，Windows 上删除 git 缓存必须用它
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31",
+    "python-dateutil>=2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "responses>=0.25",
+]
+
+[project.scripts]
+github-contributors = "contributors.main:main"
+
+[tool.setuptools]
+packages = ["contributors"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    # 需要真实网络的用例。默认全跑；离线时用 -m "not network" 跳过
+    "network: 需要访问 GitHub，离线环境下应跳过",
+]

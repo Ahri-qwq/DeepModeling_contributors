@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(gh auth *)",
-      "Bash(PYTHONIOENCODING=utf-8 python -m pytest -m \"not network\" -q)"
-    ]
-  }
-}

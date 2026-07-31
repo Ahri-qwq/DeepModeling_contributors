@@ -22,6 +22,7 @@ def mk_cfg(tmp_path, **kw):
 def mk_row(repo="dpdata", login="alice", commits=5, **kw):
     d = dict(repo=repo, login=login, name="Alice", email="a@x.com",
              github_url=f"https://github.com/{login}", commits=commits,
+             commits_loose=commits,
              commits_not_in_upstream=commits, pr_created=2, pr_merged=1,
              pr_reviewed=3, issue_created=1, issue_commented=4,
              is_fork=False, upstream="", upstream_family="", is_bot=False)
@@ -80,6 +81,33 @@ def test_summarize_accumulates_across_repos():
     assert out[0].commits == 7
     assert out[0].pr_created == 4
     assert out[0].repo == ""
+
+
+def test_summarize_accumulates_both_commit_fields():
+    # 两个字段口径各自恒定，跨仓库各自求和，互不影响
+    rows = [mk_row(repo="a", commits=3, commits_loose=10),
+            mk_row(repo="b", commits=4, commits_loose=4)]
+    out = summarize(rows)
+    assert len(out) == 1
+    assert out[0].commits == 7
+    assert out[0].commits_loose == 14
+
+
+def test_summarize_keeps_fields_independent_regardless_of_order():
+    # 汇总结果不因仓库顺序而变
+    a = summarize([mk_row(repo="a", commits=4, commits_loose=9),
+                   mk_row(repo="b", commits=3, commits_loose=3)])[0]
+    b = summarize([mk_row(repo="b", commits=3, commits_loose=3),
+                   mk_row(repo="a", commits=4, commits_loose=9)])[0]
+    assert (a.commits, a.commits_loose) == (7, 12)
+    assert (b.commits, b.commits_loose) == (7, 12)
+
+
+def test_summarize_loose_never_below_strict():
+    rows = [mk_row(repo="a", commits=3, commits_loose=8),
+            mk_row(repo="b", commits=5, commits_loose=5)]
+    out = summarize(rows)[0]
+    assert out.commits_loose >= out.commits
 
 
 def test_summarize_sorts_by_commits_desc():
