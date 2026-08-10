@@ -38,6 +38,12 @@ AI_LOG_FORMAT = (
     f"%H{RECORD_SEP}%aE{RECORD_SEP}%aI{RECORD_SEP}%B{RECORD_TERM}"
 )
 
+# 第二期事件留存专用格式：SHA、author date、提交标题首行。
+# 与 LOG_FORMAT 分开而不是给它加字段：那个格式串被 parse_git_log 的三处
+# 调用共用，而 parse_git_log 是第一期修过四个缺陷的地方，动它风险不划算。
+# 多跑一次 git log 实测 0.1 秒，买第一期计数路径的零改动很值。
+EVENT_LOG_FORMAT = f"%H{RECORD_SEP}%aI{RECORD_SEP}%s"
+
 _COAUTHOR_RE = re.compile(
     r"^\s*Co-authored-by:\s*(.+?)\s*<([^>]+)>\s*$",
     re.IGNORECASE | re.MULTILINE,
@@ -236,6 +242,48 @@ def collect_ai_coauthors(repo, cm, cfg) -> tuple:
         cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT,
     )
     return parse_ai_coauthors(text, since=cfg.since, until=cfg.until)
+
+
+def parse_commit_events(text: str, repo_name: str, org: str,
+                        since=None, until=None) -> list:
+    """解析事件格式的 git log，返回 Event 列表。
+
+    窗口过滤与主统计同口径（author date、半开区间），这样战报里的
+    提交数与 CSV 的 commits 列量纲一致。
+    """
+    from .events import commit_event
+
+    out = []
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split(RECORD_SEP)
+        if len(parts) < 3:
+            continue
+        sha, when, title = parts[0], parts[1], RECORD_SEP.join(parts[2:])
+        if not sha:
+            continue
+        if not _author_date_in_window(when, since, until):
+            continue
+        out.append(commit_event(repo_name, org, sha, title, when))
+    return out
+
+
+def collect_commit_events(repo, cm, cfg) -> list:
+    """跑一次 git log 取提交事件。
+
+    与 collect_git_stats 分开跑，理由见 EVENT_LOG_FORMAT 的说明。
+    走主干口径（--branches --tags）而非宽松口径：战报要反映真正合入
+    的工作，PR 分支上的过程提交会让数字虚高。
+    """
+    text = _run_git(
+        ["log", "--branches", "--tags", "--no-merges",
+         f"--format={EVENT_LOG_FORMAT}"],
+        cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT,
+    )
+    return parse_commit_events(text, repo.name, cfg.org,
+                               since=cfg.since, until=cfg.until)
 
 
 def _run_git(args: list, cwd: Optional[Path] = None, timeout: int = 300) -> str:

@@ -30,7 +30,7 @@ query($owner:String!,$name:String!,$cursor:String) {
                  orderBy:{field:CREATED_AT,direction:DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number createdAt merged
+        number createdAt merged title url
         author { login }
         reviews(first:50) { nodes { author { login } } }
         comments(first:50) { nodes { author { login } } }
@@ -51,7 +51,7 @@ query($owner:String!,$name:String!,$cursor:String) {
            orderBy:{field:CREATED_AT,direction:DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number createdAt
+        number createdAt title url
         author { login }
         comments(first:50) { nodes { author { login } } }
       }
@@ -240,4 +240,35 @@ def collect_api_stats(repo, cfg, client: GitHubGraphQL, cm) -> tuple:
         b.issue_created += s.issue_created
         b.issue_commented += s.issue_commented
     return pr_stats, mapping
+
+
+def collect_api_events(repo, cfg, cm) -> list:
+    """从当天的 API 缓存提取 PR / Issue 事件，返回 Event 列表。
+
+    只读缓存不发请求：collect_api_stats 已经把当天的响应落盘了，事件
+    提取纯属废物利用，API 点数消耗为零。缓存不在（比如 --no-fetch 且
+    从未联网跑过）就返回空列表，不为了事件去额外发请求 —— 事件是附带
+    产物，不值得增加限额压力。
+
+    窗口过滤与 aggregate_prs 同口径，保证战报与 CSV 的量纲一致。
+    """
+    from .events import extract_issue_events, extract_pr_events
+
+    day = datetime.now(timezone.utc).date().isoformat()
+    cache_file = cm.api_path(repo.name, day)
+    if not cache_file.is_file():
+        return []
+
+    try:
+        raw = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+
+    pr_nodes = [n for n in raw.get("prs", [])
+                if _in_window(n.get("createdAt", ""), cfg.since, cfg.until)]
+    issue_nodes = [n for n in raw.get("issues", [])
+                   if _in_window(n.get("createdAt", ""), cfg.since, cfg.until)]
+
+    return (extract_pr_events(pr_nodes, repo.name, cfg.org)
+            + extract_issue_events(issue_nodes, repo.name, cfg.org))
 

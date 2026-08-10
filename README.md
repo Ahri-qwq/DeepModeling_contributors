@@ -64,6 +64,12 @@ python -m contributors --count-lines
 
 # 磁盘紧张时排除超大仓库（默认不限，全部纳入）
 python -m contributors --max-repo-size 2048
+
+# 每天跑一次并把增量战报推送到飞书群
+python -m contributors --since 2026-01-01 --notify
+
+# 先看看会推什么，不真发
+python -m contributors --since 2026-01-01 --notify-dry-run
 ```
 
 ### 参数表
@@ -87,6 +93,11 @@ python -m contributors --max-repo-size 2048
 | `--exclude-paths` | — | 行数统计的额外排除模式，逗号分隔，追加到内置列表 |
 | `--jobs` | `4` | 尚未实现，传入无效果 |
 | `--verbose` | 关 | 尚未实现，传入无效果 |
+| `--no-events` | 关 | 跳过事件留存，退回纯统计行为 |
+| `--events-db` | `./data/events.db` | 事件历史库路径 |
+| `--notify` | 关 | 跑完把增量战报推送到飞书群 |
+| `--notify-dry-run` | 关 | 渲染卡片打到 stdout，不发送 |
+| `--notify-empty` | 关 | 无新增时也推送（默认跳过，避免刷屏） |
 
 > `--no-fetch` 完全跳过 GitHub API，PR/Issue/Review/Comment 各列全为 0，email→login 映射仅靠 noreply 邮箱正则解析。适用于改时间窗快速验证 commit 口径；出正式名单用完整跑法。
 
@@ -105,10 +116,17 @@ github_contributors/
 │   ├── identity.py         # 身份归并、bot / AI 助手识别
 │   ├── cache.py            # 缓存管理、增量判断、磁盘预检
 │   ├── models.py           # 共享数据结构（避免循环导入）
-│   └── output.py           # CSV / Markdown / JSON 输出
-├── tests/                  # 299 个测试，与源码模块一一对应
-├── docs/                   # 新设备快速开始
+│   ├── output.py           # CSV / Markdown / JSON 输出
+│   ├── events.py           # 事件数据结构、从两条管线提取事件
+│   ├── store.py            # 事件历史库（SQLite）、去重、跨运行差集
+│   └── notify/             # 飞书推送
+│       ├── digest.py       # 库里的变化聚合成战报结构
+│       ├── card.py         # 战报渲染成卡片 JSON（纯函数）
+│       └── feishu.py       # 签名、POST、重试
+├── tests/                  # 377 个测试，与源码模块一一对应
+├── docs/                   # 快速开始与设计文档
 ├── .cache/                 # 运行时缓存（已忽略）
+├── data/                   # 事件历史库（已忽略）
 └── output*/                # 结果目录（已忽略）
 ```
 
@@ -124,11 +142,18 @@ __main__ → main → ┬→ config
                   ├→ api_stats ┤
                   ├→ identity ─┘
                   ├→ cache
-                  └→ output
+                  ├→ output
+                  ├→ events   ─┐
+                  ├→ store    ─┘
+                  └→ notify/ → (digest → card → feishu)
 ```
 
 `models.py` 只放数据类，被多个模块共用，本身不 import 任何业务模块 —— 
 这是为了避免 `git_stats` 与 `api_stats` 互相引用。
+
+第二期的三层同样单向：`store` 不知道飞书存在，`notify` 不知道 git 与 API 存在，
+两边只通过库里的表通信。以后加网页看板或多维表格，是在 `notify/` 旁边加平级消费者，
+`store` 不用改。
 
 | 模块 | 关键职责 | 易错点 |
 |------|----------|--------|
@@ -139,6 +164,9 @@ __main__ → main → ┬→ config
 | `cache.py` | 增量判断、Windows 只读位处理 | `rmtree` 必须用 `onexc` 清只读位 |
 | `main.py` | 编排、跨邮箱合并、同名合并、报告 | 单仓库失败不得中断整体 |
 | `output.py` | 三种格式输出 | CSV 需 BOM，Markdown 表格内禁止加粗 |
+| `events.py` | 事件提取，只存原始 login 不做归并 | 收集失败不得影响统计 |
+| `store.py` | 去重、状态变更、跨运行差集 | 状态未变时不得记变更，否则每天重复推送 |
+| `notify/` | 聚合、渲染、发送 | 签名是"密钥当 key、对空串摘要"，反直觉 |
 
 ### 主流程时序
 
@@ -294,6 +322,58 @@ GitHub API 报的仓库体积与实际下载量无关：统计只读 commit 元�
 blobless 克隆不拉文件内容。sciencepedia 标称 17.5 GB，缓存实占 412 MB。
 因此 `--max-repo-size` 默认不限，不要用它来"省流量"。
 
+## 每日增量与飞书推送
+
+除了统计总量，工具还会把看到的每一条 commit / PR / issue 存进事件库
+（`./data/events.db`，SQLite），据此算出"自上次汇报以来发生了什么"并推送到飞书群。
+
+设计文档见 [`docs/第二期工程/2026-08-10-每日增量与飞书推送-设计.md`](docs/第二期工程/2026-08-10-每日增量与飞书推送-设计.md)。
+
+### 配置
+
+在项目根目录建 `.env`（已在 `.gitignore` 中，不会被提交）：
+
+```
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+FEISHU_WEBHOOK_SECRET=
+```
+
+URL 来自飞书群「设置 → 群机器人 → 添加机器人 → 自定义机器人」，群主自己就能加，
+不需要企业管理员审批。安全设置选「签名校验」时把飞书给的密钥填进 `SECRET`；
+选「自定义关键词」时留空即可，卡片标题含 `DeepModeling` 天然命中该关键词。
+
+### 增量怎么算
+
+按「本次运行新看到的」判定，而不是按事件自身的时间戳。
+
+原因是统计窗口按 author date 算（见[统计口径](#统计口径)），而 author date 是代码写成
+时间，不是进入仓库时间。有人本地写了两周才推上来，这批提交的 author date 全是两周前，
+按事件时间判定就永远不会出现在任何一天的战报里，但总量确实涨了。按「新看到」判定则
+保证不漏，代价是战报里偶尔出现日期较早的提交。
+
+PR 的合并是状态变更而非新增行，单独记录。上周创建、今天合并的 PR 照样会出现在今天的
+战报里 —— 只看新增行的话会漏掉它，而合并恰恰是最值得说的事件。
+
+### 行为要点
+
+首次运行会把窗口内几千条事件全判为新增，此时只建库不推送，从第二次运行起才有意义。
+无新增时不推送（`--notify-empty` 可改变），避免每天推「今天没有新增」把人逼到静音。
+推送失败不影响退出码，也不会丢内容：下次运行会把两次的增量一起推出去。
+
+事件库是派生数据，不进 git。旧事件能重爬，但「第几次运行首次看到」这个信息重建不了，
+需要长期历史的话请自行备份。
+
+### 计划任务
+
+Windows 上用任务计划程序每天调一次：
+
+```
+py -3.12 -m contributors --since 2026-01-01 --notify
+```
+
+飞书对单个机器人限流 100 次/分钟、5 次/秒，官方文档建议避开 10:00、17:30 这类
+整点半点集中发送的时刻。每天一次远低于限额，但时间点仍建议错开整点。
+
 ## 统计口径
 
 - **时间**：闭区间（含两端），统一按 UTC 判定。提交以 **author date** 为准而非 committer date（rebase/cherry-pick/squash 会刷新后者，导致旧代码被算进新窗口）
@@ -322,7 +402,7 @@ blobless 克隆不拉文件内容。sciencepedia 标称 17.5 GB，缓存实占 4
 ## 开发
 
 ```bash
-python -m pytest -q          # 299 个测试，不联网
+python -m pytest -q          # 377 个测试，不联网
 ```
 
 Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。

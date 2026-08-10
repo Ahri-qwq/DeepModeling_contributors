@@ -11,21 +11,25 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .api_stats import GitHubGraphQL, RateLimitError, collect_api_stats
+from .api_stats import (
+    GitHubGraphQL, RateLimitError, collect_api_events, collect_api_stats,
+)
 from .auth import AuthError, get_token
 from .cache import CacheError, CacheManager
 from .config import parse_args
 from .git_stats import (
-    GitError, clone_or_fetch, collect_ai_coauthors, collect_git_stats,
-    count_upstream_excluded,
+    GitError, clone_or_fetch, collect_ai_coauthors, collect_commit_events,
+    collect_git_stats, count_upstream_excluded,
 )
 from .identity import IdentityResolver, is_ai_assistant, is_bot, is_marked_bot
 from .models import ApiStats
+from .notify import card, digest, feishu
 from .output import (
     SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
     write_markdown,
 )
 from .repos import fetch_repos, filter_repos
+from .store import EventStore
 
 # build_rows 中需要跨邮箱累加的行数字段
 _LINE_FIELDS = ("additions", "deletions", "files_changed",
@@ -289,7 +293,7 @@ def build_ai_assisted_report(ai_records: list, rows: list) -> list:
 def process_repo(repo, cm, cfg, client, resolver) -> tuple:
     """采集单仓库两侧数据并合并。不传 token：git 层用匿名访问公开仓库。
 
-    返回 (正常行, bot 行, AI 追溯记录)。
+    返回 (正常行, bot 行, AI 追溯记录, 事件列表)。
     """
     clone_or_fetch(repo, cm, cfg)
 
@@ -323,7 +327,22 @@ def process_repo(repo, cm, cfg, client, resolver) -> tuple:
 
     rows, bots = build_rows(repo, gstats, api, resolver, cfg, ups)
     ai = {"repo": repo.name, "traced": traced, "untraced": untraced}
-    return rows, bots, ai
+
+    # 事件留存（第二期）。失败不影响统计：事件是旁路产物，CSV 才是主产物。
+    # 与 AI 附表同样的隔离原则 —— 新功能不能拖累已经跑通的旧功能。
+    events = []
+    if getattr(cfg, "events", True):
+        try:
+            events.extend(collect_commit_events(repo, cm, cfg))
+        except (GitError, OSError) as exc:
+            print(f"  提示：{repo.name} 提交事件收集失败，战报将缺该仓库（{exc}）")
+        if client is not None:
+            try:
+                events.extend(collect_api_events(repo, cfg, cm))
+            except (OSError, ValueError) as exc:
+                print(f"  提示：{repo.name} PR/Issue 事件收集失败（{exc}）")
+
+    return rows, bots, ai, events
 
 
 def _load_repos(cm, cfg, token):
@@ -368,14 +387,16 @@ def run(cfg, token: str) -> int:
     client = None if cfg.no_fetch else GitHubGraphQL(token)
     resolver = IdentityResolver()
     rows, bots, failures, ai_records = [], [], {}, []
+    all_events = []
 
     for i, repo in enumerate(kept, 1):
         print(f"[{i}/{len(kept)}] {repo.name} ...", flush=True)
         try:
-            r, b, ai = process_repo(repo, cm, cfg, client, resolver)
+            r, b, ai, evs = process_repo(repo, cm, cfg, client, resolver)
             rows.extend(merge_by_name(r))
             bots.extend(b)
             ai_records.append(ai)
+            all_events.extend(evs)
         except (GitError, RateLimitError, RuntimeError, OSError) as exc:
             failures[repo.name] = str(exc)[:500]
             print(f"  失败：{exc}")
@@ -395,7 +416,90 @@ def run(cfg, token: str) -> int:
               "GitHub 账号，见 unmatched.csv")
     if failures:
         print(f"注意：{len(failures)} 个仓库处理失败，见 run_meta.json")
+
+    # 事件留存与推送。整段包在 try 里：退出码只反映统计跑没跑成，
+    # 计划任务与监控盯的是它。通知失败不是数据失败，不该触发报警 ——
+    # 它有自愈机制（下次把两天的内容一起推），且群里没消息自然会发现。
+    if getattr(cfg, "events", True):
+        try:
+            _record_and_notify(all_events, meta, cfg, len(kept), rows)
+        except Exception as exc:                       # noqa: BLE001
+            print(f"注意：事件留存或推送失败（{exc}），统计结果不受影响")
+
     return 0
+
+
+def _record_and_notify(events, meta, cfg, repos_processed: int,
+                       rows: list) -> None:
+    """把事件写进历史库，按需推送战报。"""
+    store = EventStore(cfg.events_db)
+    try:
+        store.init_schema()
+        first = store.is_first_run()
+
+        run_id = store.begin_run(since=meta["window"]["since"],
+                                 until=meta["window"]["until"])
+        result = store.upsert_events(events, run_id)
+        store.finish_run(run_id, repos_processed=repos_processed)
+        print(f"事件库 {cfg.events_db}：本次新增 {len(result.new_events)} 条，"
+              f"状态变更 {len(result.state_changes)} 条")
+
+        if not (cfg.notify or cfg.notify_dry_run):
+            return
+
+        if first:
+            # 首次运行会把今年至今几千条全判为新增，推出去毫无意义
+            print("首次运行，已建库但不推送；下次运行起才有增量")
+            return
+
+        pending = store.pending_since_last_notify()
+        d = digest.build(
+            pending,
+            last_notify_at=_last_notify_time(store),
+            total_contributors=meta.get("contributors"),
+            total_commits=_total_commits(rows),
+        )
+
+        if d.is_empty and not cfg.notify_empty:
+            # 每天推一条"今天没有新增"会很快让人把机器人静音
+            print("无新增内容，跳过推送（--notify-empty 可改变）")
+            return
+
+        payload = card.render(d)
+        if cfg.notify_dry_run:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+
+        feishu.load_env()
+        try:
+            feishu.send(payload)
+            store.mark_notified(run_id, True)
+            print("已推送到飞书群")
+        except feishu.FeishuError as exc:
+            store.mark_notified(run_id, False)
+            n = store.runs_since_last_notify()
+            msg = f"推送失败（{exc}）"
+            if n >= 3:
+                msg += f"；距上次成功推送已 {n} 次运行，请检查配置"
+            print(f"注意：{msg}")
+    finally:
+        store.close()
+
+
+def _last_notify_time(store) -> str:
+    row = store.conn.execute(
+        "SELECT finished_at FROM runs WHERE notified=1 "
+        "ORDER BY run_id DESC LIMIT 1").fetchone()
+    return row[0] if row and row[0] else ""
+
+
+def _total_commits(rows: list) -> int:
+    """今年至今的提交总数。
+
+    取严格口径（commits 列）与 summary.csv 的排序口径一致 —— 战报底部
+    这一行是给人对照 CSV 用的，两处数字必须同口径。
+    """
+    return sum(r.commits for r in summarize(rows))
 
 
 def _write_outputs(rows, bots, ai_records, resolver, cfg, out: Path) -> None:

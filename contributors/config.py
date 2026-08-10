@@ -96,6 +96,13 @@ class Config:
     fmt: str = "all"
     jobs: int = 4
     verbose: bool = False
+    # 第二期：事件留存与飞书推送。默认留存但不推送 —— 推送有外部副作用，
+    # 应显式开启，计划任务里才带 --notify。
+    events: bool = True
+    events_db: str = "./data/events.db"
+    notify: bool = False
+    notify_dry_run: bool = False
+    notify_empty: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -138,6 +145,18 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     )
     p.add_argument("--jobs", type=int, default=4)
     p.add_argument("--verbose", action="store_true")
+    p.add_argument(
+        "--no-events", action="store_true",
+        help="跳过事件留存，退回第一期行为",
+    )
+    p.add_argument("--events-db", default="./data/events.db",
+                   help="事件历史库路径")
+    p.add_argument("--notify", action="store_true",
+                   help="跑完把增量战报推送到飞书群")
+    p.add_argument("--notify-dry-run", action="store_true",
+                   help="渲染卡片打到 stdout，不发送")
+    p.add_argument("--notify-empty", action="store_true",
+                   help="无新增时也推送（默认跳过，避免每天刷屏）")
 
     a = p.parse_args(argv)
     since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
@@ -160,4 +179,9 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         fmt=a.fmt,
         jobs=a.jobs,
         verbose=a.verbose,
+        events=not a.no_events,
+        events_db=a.events_db,
+        notify=a.notify,
+        notify_dry_run=a.notify_dry_run,
+        notify_empty=a.notify_empty,
     )
