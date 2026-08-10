@@ -1,6 +1,10 @@
 .cache/
 output/
 output_*/
+# 凭据：飞书 webhook URL 与签名密钥，绝不入库
+.env
+# 事件历史库：派生数据，会持续增长，需自行备份
+data/
 __pycache__/
 *.pyc
 .venv/
