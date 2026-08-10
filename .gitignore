@@ -17,8 +17,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-# 内部过程文档：口径确认记录、审查报告、任务交接、含真实姓名邮箱的校验数据。
-# 只有 docs/新设备快速开始.md 对外发布
-docs/2026-*
-docs/确认问题.md
-docs/superpowers/
+# superpowers 技能在顶层生成的临时计划与 spec。各期的正式文档归档在
+# docs/第N期工程/ 下并随仓库公开 —— 里面的姓名邮箱本就是开源社区的公开
+# 信息，且这批文档正是表彰名单的依据。
+/docs/superpowers/
