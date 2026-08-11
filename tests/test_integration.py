@@ -70,7 +70,10 @@ def mk_cfg(tmp_path, **kw):
                 # 漏传会让 --count-lines 的过滤测试假通过。
                 exclude_paths=list(DEFAULT_EXCLUDE_PATHS),
                 cache_dir=str(tmp_path / ".cache"),
-                out_dir=str(tmp_path / "output"))
+                out_dir=str(tmp_path / "output"),
+                # 必须显式重定向：默认值是真实的 ./data/events.db，
+                # 漏传会让走完整 run() 的测试把 tiny 的假数据写进真实事件库
+                events_db=str(tmp_path / "events.db"))
     base.update(kw)
     return Config(**base)
 
