@@ -32,10 +32,40 @@ def _issue(number, repo="abacus-develop"):
                  "bob", "2026-08-09T10:00:00+00:00", None)
 
 
-def _change(number, new_state="merged", repo="deepmd-kit"):
+def _change(number, new_state="merged", repo="deepmd-kit", author="carol"):
     return StateChange(f"pr:{repo}:{number}", "pr", repo, number, "示例",
                        f"https://github.com/deepmodeling/{repo}/pull/{number}",
-                       "open", new_state)
+                       "open", new_state, author)
+
+
+class TestAuthorDisplay:
+    """条目显示提交者：拿到什么放什么，都没有就空着。"""
+
+    def test_new_pr_line_shows_author(self):
+        d = build(UpsertResult([_pr(1, "open")], []))
+        assert "@alice" in card.render_text(d)
+
+    def test_merged_pr_from_state_change_shows_author(self):
+        """合并的 PR 走状态变更路径，作者同样要显示。
+
+        这条最容易漏：StateChange 原本没 select author_login，
+        只改 Item 会导致"合并的 PR"是唯一没作者的一栏。
+        """
+        d = build(UpsertResult([], [_change(7)]))
+        assert "@carol" in card.render_text(d)
+
+    def test_author_follows_title(self):
+        """提交者放标题后面（用户明确要求）。"""
+        d = build(UpsertResult([_pr(1, "open", title="修复某问题")], []))
+        line = [l for l in card.render_text(d).splitlines() if "#1" in l][0]
+        assert line.index("修复某问题") < line.index("@alice")
+
+    def test_missing_author_renders_nothing(self):
+        """已删号用户 author 为 null，留空而不是写"未知"。"""
+        ev = _pr(1, "open")
+        ev.author_login = None
+        text = card.render_text(build(UpsertResult([ev], [])))
+        assert "@" not in text and "未知" not in text
 
 
 class TestTimezone:
@@ -162,6 +192,36 @@ class TestRenderText:
         text = card.render_text(d)
         assert "366 位贡献者" in text
         assert "2527 次提交" in text
+
+    def test_totals_line_includes_pr_and_issue(self):
+        """底部与顶部同样详细：提交 · PR 合并 · PR 新建 · issue。
+
+        数字来自 summary.csv 已有的三列，不额外发 API 请求。
+        """
+        d = build(UpsertResult([], []), total_contributors=366,
+                  total_commits=2527, total_prs_merged=1303,
+                  total_prs_created=1860, total_issues=765)
+        text = card.render_text(d)
+        assert "1303 个 PR 合并" in text
+        assert "1860 个 PR 新建" in text
+        assert "765 个 issue" in text
+
+    def test_totals_line_labels_partial_run_scope(self):
+        """只跑部分仓库时必须标注范围。
+
+        昨天正是这里误导了人：单仓库跑出的 20 位贡献者被写成"今年至今"，
+        看起来像社区总量。
+        """
+        d = build(UpsertResult([], []), total_contributors=20,
+                  total_commits=17, repos_processed=1, repos_total=34)
+        assert "今年至今（1/34 个仓库）" in card.render_text(d)
+
+    def test_full_run_scope_is_not_labeled(self):
+        """跑全量时不加括号，避免噪音。"""
+        d = build(UpsertResult([], []), total_contributors=366,
+                  total_commits=2527, repos_processed=34, repos_total=34)
+        text = card.render_text(d)
+        assert "今年至今：" in text and "个仓库" not in text
 
 
 class TestRenderCard:

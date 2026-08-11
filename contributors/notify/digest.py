@@ -21,6 +21,7 @@ class Item:
     number: Optional[int]
     title: str
     url: str
+    author: str = ""
 
 
 @dataclass
@@ -34,6 +35,14 @@ class Digest:
     generated_at: str = ""
     total_contributors: Optional[int] = None
     total_commits: Optional[int] = None
+    # 底部累计的 PR/issue，口径与 summary.csv 的同名列一致（按人累加）
+    total_prs_merged: Optional[int] = None
+    total_prs_created: Optional[int] = None
+    total_issues: Optional[int] = None
+    # 本次跑了几个仓库。跑子集时底部要标注范围，否则局部数字看起来
+    # 像社区总量 —— 2026-08-10 的首条真实战报正是栽在这里。
+    repos_processed: Optional[int] = None
+    repos_total: Optional[int] = None
 
     @property
     def is_empty(self) -> bool:
@@ -70,12 +79,18 @@ def to_cst_text(iso: str) -> str:
 
 
 def _item(ev) -> Item:
-    return Item(repo=ev.repo, number=ev.number, title=ev.title, url=ev.url)
+    return Item(repo=ev.repo, number=ev.number, title=ev.title, url=ev.url,
+                author=ev.author_login or "")
 
 
 def build(pending, last_notify_at: str = "",
           total_contributors: Optional[int] = None,
           total_commits: Optional[int] = None,
+          total_prs_merged: Optional[int] = None,
+          total_prs_created: Optional[int] = None,
+          total_issues: Optional[int] = None,
+          repos_processed: Optional[int] = None,
+          repos_total: Optional[int] = None,
           now: Optional[datetime] = None) -> Digest:
     """把 store 查出的待推送变化聚合成战报。
 
@@ -90,7 +105,8 @@ def build(pending, last_notify_at: str = "",
     merged_keys = set()
     for chg in pending.state_changes:
         if chg.new_state == "merged":
-            d.merged_prs.append(Item(chg.repo, chg.number, chg.title, chg.url))
+            d.merged_prs.append(Item(chg.repo, chg.number, chg.title, chg.url,
+                                     chg.author_login or ""))
             merged_keys.add(chg.event_key)
 
     for ev in pending.new_events:
@@ -110,4 +126,9 @@ def build(pending, last_notify_at: str = "",
     d.generated_at = ref.astimezone(CST).strftime("%Y-%m-%d")
     d.total_contributors = total_contributors
     d.total_commits = total_commits
+    d.total_prs_merged = total_prs_merged
+    d.total_prs_created = total_prs_created
+    d.total_issues = total_issues
+    d.repos_processed = repos_processed
+    d.repos_total = repos_total
     return d

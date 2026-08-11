@@ -13,11 +13,16 @@ SIZE_LIMIT = 18 * 1024
 
 
 def _line(item, kind: str) -> str:
-    """一行条目。标题做 markdown 转义，编号带链接。"""
+    """一行条目。标题做 markdown 转义，编号带链接，提交者缀在标题后。
+
+    提交者拿到什么放什么（login / 姓名 / 邮箱皆可），拿不到就整个省略 ——
+    已删号用户的 author 为 null，写"未知"只是噪音。
+    """
     title = _escape(item.title) or "(无标题)"
+    who = f" @{_escape(item.author)}" if getattr(item, "author", "") else ""
     if item.number is None:
-        return f"· {item.repo} {title}"
-    return f"· [{item.repo} #{item.number}]({item.url}) {title}"
+        return f"· {item.repo} {title}{who}"
+    return f"· [{item.repo} #{item.number}]({item.url}) {title}{who}"
 
 
 def _escape(text: str) -> str:
@@ -57,6 +62,33 @@ def _summary_line(d: Digest) -> str:
     return " · ".join(parts) if parts else "无新增"
 
 
+def _totals_line(d: Digest) -> str:
+    """底部累计。与顶部同样详细，数字全部来自已落盘的 CSV 口径。
+
+    带范围标注：只跑部分仓库时写"（1/34 个仓库）"，否则局部数字看起来
+    像社区总量。跑全量时不加括号，避免噪音。
+    """
+    tail = []
+    if d.total_contributors is not None:
+        tail.append(f"{d.total_contributors} 位贡献者")
+    if d.total_commits is not None:
+        tail.append(f"{d.total_commits} 次提交")
+    if d.total_prs_merged is not None:
+        tail.append(f"{d.total_prs_merged} 个 PR 合并")
+    if d.total_prs_created is not None:
+        tail.append(f"{d.total_prs_created} 个 PR 新建")
+    if d.total_issues is not None:
+        tail.append(f"{d.total_issues} 个 issue")
+    if not tail:
+        return ""
+
+    scope = ""
+    if (d.repos_processed is not None and d.repos_total
+            and d.repos_processed < d.repos_total):
+        scope = f"（{d.repos_processed}/{d.repos_total} 个仓库）"
+    return f"今年至今{scope}：{' · '.join(tail)}"
+
+
 def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     """卡片正文的 markdown。"""
     lines = []
@@ -77,14 +109,10 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
             lines.append("")
             lines.extend(sec)
 
-    if d.total_contributors is not None or d.total_commits is not None:
+    totals = _totals_line(d)
+    if totals:
         lines.append("")
-        tail = []
-        if d.total_contributors is not None:
-            tail.append(f"{d.total_contributors} 位贡献者")
-        if d.total_commits is not None:
-            tail.append(f"{d.total_commits} 次提交")
-        lines.append(f"今年至今：{' · '.join(tail)}")
+        lines.append(totals)
 
     return "\n".join(lines)
 

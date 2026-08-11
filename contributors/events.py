@@ -62,6 +62,7 @@ class StateChange:
     url: str
     old_state: Optional[str]
     new_state: Optional[str]
+    author_login: Optional[str] = None
 
 
 def clip_title(text: str) -> str:

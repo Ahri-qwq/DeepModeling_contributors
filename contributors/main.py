@@ -453,11 +453,17 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             return
 
         pending = store.pending_since_last_notify()
+        totals = _year_totals(rows)
         d = digest.build(
             pending,
             last_notify_at=_last_notify_time(store),
             total_contributors=meta.get("contributors"),
-            total_commits=_total_commits(rows),
+            total_commits=totals["commits"],
+            total_prs_merged=totals["pr_merged"],
+            total_prs_created=totals["pr_created"],
+            total_issues=totals["issue_created"],
+            repos_processed=meta.get("repos_processed"),
+            repos_total=meta.get("repos_total"),
         )
 
         if d.is_empty and not cfg.notify_empty:
@@ -493,13 +499,24 @@ def _last_notify_time(store) -> str:
     return row[0] if row and row[0] else ""
 
 
-def _total_commits(rows: list) -> int:
-    """今年至今的提交总数。
+def _year_totals(rows: list) -> dict:
+    """今年至今的四项累计，口径与 summary.csv 同名列一致。
 
-    取严格口径（commits 列）与 summary.csv 的排序口径一致 —— 战报底部
-    这一行是给人对照 CSV 用的，两处数字必须同口径。
+    commits 取严格口径（而非 commits_loose），与 summary.csv 的排序口径
+    一致 —— 战报底部这行是给人对照 CSV 用的，两处数字必须对得上。
+
+    PR/issue 三项是按人累加的：某人在窗口前创建、窗口内仍有活动的 PR
+    也会计入，故它不等于"窗口内新建的 PR 数"。保持这个口径是有意的，
+    因为人们要核对的正是 summary.csv 本身。数据全部来自已落盘的统计，
+    不额外发 API 请求。
     """
-    return sum(r.commits for r in summarize(rows))
+    merged = summarize(rows)
+    return {
+        "commits": sum(r.commits for r in merged),
+        "pr_created": sum(r.pr_created for r in merged),
+        "pr_merged": sum(r.pr_merged for r in merged),
+        "issue_created": sum(r.issue_created for r in merged),
+    }
 
 
 def _write_outputs(rows, bots, ai_records, resolver, cfg, out: Path) -> None:

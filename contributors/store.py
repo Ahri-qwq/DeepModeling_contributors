@@ -213,7 +213,8 @@ class EventStore:
             changes.append(StateChange(
                 event_key=ev.key, kind=ev.kind, repo=ev.repo,
                 number=ev.number, title=ev.title, url=ev.url,
-                old_state=old, new_state=ev.state))
+                old_state=old, new_state=ev.state,
+                author_login=ev.author_login))
 
         self.conn.commit()
         return UpsertResult(new_events, changes)
@@ -235,13 +236,14 @@ class EventStore:
 
         rows = self.conn.execute(
             "SELECT c.event_key, c.old_state, c.new_state, "
-            "       e.kind, e.repo, e.number, e.title, e.url "
+            "       e.kind, e.repo, e.number, e.title, e.url, e.author_login "
             "FROM event_state_changes c JOIN events e USING (event_key) "
             "WHERE c.run_id > ? ORDER BY c.id", (last,)).fetchall()
         changes = [StateChange(
             event_key=r["event_key"], kind=r["kind"], repo=r["repo"],
             number=r["number"], title=r["title"], url=r["url"],
             old_state=r["old_state"], new_state=r["new_state"],
+            author_login=r["author_login"],
         ) for r in rows]
 
         return UpsertResult(new_events, changes)
