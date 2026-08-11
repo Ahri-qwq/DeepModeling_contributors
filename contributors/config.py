@@ -108,6 +108,8 @@ class Config:
     # 日常模式：只维护 by_repo.csv 与 summary.csv 两张总表。
     # 其余附表是全量统计时的人工核对材料，每天重写既慢又没人看。
     daily: bool = False
+    # 重发库里最近一份战报存档。调通道、验排版时不必等真实增量。
+    resend_last: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -170,6 +172,9 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     p.add_argument("--mark-notified", action="store_true",
                    help="把当前进度记为已推送基线，划掉历史积压。"
                         "首次建库后用一次，之后每天跑才是真正的增量")
+    p.add_argument("--resend-last", action="store_true",
+                   help="重发库里最近一份战报存档，不重新计算增量。"
+                        "调通道或验排版时用，配合 --notify-dry-run 可只看不发")
 
     a = p.parse_args(argv)
     since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
@@ -201,4 +206,5 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         notify_empty=a.notify_empty,
         mark_notified=a.mark_notified,
         daily=a.daily,
+        resend_last=a.resend_last,
     )

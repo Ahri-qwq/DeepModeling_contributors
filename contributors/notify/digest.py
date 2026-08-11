@@ -43,6 +43,10 @@ class Digest:
     # 像社区总量 —— 2026-08-10 的首条真实战报正是栽在这里。
     repos_processed: Optional[int] = None
     repos_total: Optional[int] = None
+    # 距上次成功推送的小时数。None 表示从没成功推送过。
+    # 用它决定文案：约一天内写"昨日社区动态"，超出则回退到
+    # "自上次汇报（X）以来" —— 推送失败补推时卡片里装的是两天的内容。
+    hours_since_notify: Optional[float] = None
 
     @property
     def is_empty(self) -> bool:
@@ -76,6 +80,23 @@ def to_cst_text(iso: str) -> str:
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
     return t.astimezone(CST).strftime("%m-%d %H:%M")
+
+
+def _hours_between(iso: str, ref: datetime) -> Optional[float]:
+    """上次成功推送到现在隔了多少小时。取不到时返回 None。
+
+    解析失败一律返回 None（当作"没有上次"），这样文案会走保守的
+    "自上次汇报以来"分支 —— 宁可啰嗦，不可说谎。
+    """
+    if not iso:
+        return None
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (ref - t).total_seconds() / 3600
 
 
 def _item(ev) -> Item:
@@ -124,6 +145,7 @@ def build(pending, last_notify_at: str = "",
     d.since_text = to_cst_text(last_notify_at)
     ref = now or datetime.now(timezone.utc)
     d.generated_at = ref.astimezone(CST).strftime("%Y-%m-%d")
+    d.hours_since_notify = _hours_between(last_notify_at, ref)
     d.total_contributors = total_contributors
     d.total_commits = total_commits
     d.total_prs_merged = total_prs_merged

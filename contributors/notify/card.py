@@ -89,17 +89,30 @@ def _totals_line(d: Digest) -> str:
     return f"今年至今{scope}：{' · '.join(tail)}"
 
 
+# 距上次成功推送多久之内算"昨日"。定在 36 小时而非 24：日报固定每天同一
+# 时刻跑，正常间隔就是 24 小时上下，机器起停、任务延迟都会让它浮动几小时。
+# 卡死 24 会让大量正常运行被判成异常，反而天天显示回退文案。
+YESTERDAY_MAX_HOURS = 36
+
+
+def _headline(d: Digest) -> str:
+    """正文第一行。
+
+    固定每天跑时写"昨日社区动态"。但增量是按"本次运行新看到的"判定的，
+    推送失败补推时卡片里装的是两天的内容，此时必须回退到带日期的说法 ——
+    否则文案就在说谎。从没成功推送过时同样回退。
+    """
+    hours = d.hours_since_notify
+    if hours is not None and hours <= YESTERDAY_MAX_HOURS:
+        return "昨日社区动态"
+    if d.since_text:
+        return f"自上次汇报（{d.since_text}）以来："
+    return "自上次汇报以来："
+
+
 def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     """卡片正文的 markdown。"""
-    lines = []
-
-    # 写"自上次汇报以来"而非"今天"：增量按"本次运行新看到的"判定，
-    # 昨天推送失败时今天会把两天的内容一起推出来，这句才诚实。
-    if d.since_text:
-        lines.append(f"自上次汇报（{d.since_text}）以来：")
-    else:
-        lines.append("自上次汇报以来：")
-    lines.append(_summary_line(d))
+    lines = [_headline(d), _summary_line(d)]
 
     for title, items in (("合并的 PR", d.merged_prs),
                          ("新建的 PR", d.opened_prs),

@@ -272,3 +272,67 @@ class TestNotifyBaseline:
         """库里没有任何运行时调用不应报错。"""
         store.mark_notify_baseline()
         assert store.pending_since_last_notify().new_events == []
+
+
+class TestDigestArchive:
+    """战报存档：可溯源，也能取出来重发。
+
+    存完整卡片 JSON 而非渲染前的结构，这样旧存档不依赖当时的代码版本 ——
+    渲染逻辑改了照样发得出去。
+    """
+
+    def _payload(self, n=1):
+        return {"msg_type": "interactive",
+                "card": {"header": {"title": {"content": f"日报 {n}"}}}}
+
+    def test_saved_digest_can_be_read_back(self, store):
+        run = store.begin_run(since="2026-08-10", until="2026-08-11")
+        store.finish_run(run, repos_processed=1)
+        store.save_digest(run, self._payload(1))
+        assert store.latest_digest() == self._payload(1)
+
+    def test_latest_returns_most_recent(self, store):
+        run = store.begin_run()
+        store.finish_run(run, repos_processed=1)
+        store.save_digest(run, self._payload(1))
+        store.save_digest(run, self._payload(2))
+        assert store.latest_digest()["card"]["header"]["title"]["content"] == "日报 2"
+
+    def test_latest_on_empty_db_is_none(self, store):
+        assert store.latest_digest() is None
+
+    def test_sent_flag_is_recorded(self, store):
+        run = store.begin_run()
+        store.finish_run(run, repos_processed=1)
+        did = store.save_digest(run, self._payload(), sent=None)
+        store.mark_digest_sent(did, True)
+        assert store.list_digests()[0]["sent"] == 1
+
+    def test_list_digests_newest_first(self, store):
+        run = store.begin_run()
+        store.finish_run(run, repos_processed=1)
+        store.save_digest(run, self._payload(1))
+        store.save_digest(run, self._payload(2))
+        ids = [d["id"] for d in store.list_digests()]
+        assert ids == sorted(ids, reverse=True)
+
+    def test_schema_added_to_existing_db(self, tmp_path):
+        """老库没有 digests 表，init_schema 应补建而非报错。
+
+        CREATE TABLE IF NOT EXISTS 每次都跑，所以升级是自动的 ——
+        用户的库里已经有 1900 多条真实事件，不能要求重建。
+        """
+        db = tmp_path / "events.db"
+        s = EventStore(str(db))
+        s.init_schema()
+        s.conn.execute("DROP TABLE digests")
+        s.conn.commit()
+        s.close()
+
+        s2 = EventStore(str(db))
+        s2.init_schema()          # 应把表补回来
+        run = s2.begin_run()
+        s2.finish_run(run, repos_processed=1)
+        s2.save_digest(run, {"a": 1})
+        assert s2.latest_digest() == {"a": 1}
+        s2.close()

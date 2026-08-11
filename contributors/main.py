@@ -435,6 +435,24 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
     store = EventStore(cfg.events_db)
     try:
         store.init_schema()
+
+        # 重发最近一份存档：调通道、验排版时不必等真实增量
+        if getattr(cfg, "resend_last", False):
+            payload = store.latest_digest()
+            if payload is None:
+                print("库里没有战报存档，无法重发")
+                return
+            if cfg.notify_dry_run:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                return
+            feishu.load_env()
+            try:
+                feishu.send(payload)
+                print("已重发最近一份战报")
+            except feishu.FeishuError as exc:
+                print(f"注意：重发失败（{exc}）")
+            return
+
         first = store.is_first_run()
 
         run_id = store.begin_run(since=meta["window"]["since"],
@@ -480,16 +498,21 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 
         payload = card.render(d)
         if cfg.notify_dry_run:
+            # dry-run 也存档：这样调通道时不必等真实增量，可以直接重发
+            store.save_digest(run_id, payload, sent=None)
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return
 
+        digest_id = store.save_digest(run_id, payload, sent=None)
         feishu.load_env()
         try:
             feishu.send(payload)
             store.mark_notified(run_id, True)
+            store.mark_digest_sent(digest_id, True)
             print("已推送到飞书群")
         except feishu.FeishuError as exc:
             store.mark_notified(run_id, False)
+            store.mark_digest_sent(digest_id, False)
             n = store.runs_since_last_notify()
             msg = f"推送失败（{exc}）"
             if n >= 3:

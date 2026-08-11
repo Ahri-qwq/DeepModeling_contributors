@@ -380,3 +380,41 @@ class TestLoadEnv:
 
     def test_missing_file_is_ignored(self, tmp_path):
         feishu.load_env(str(tmp_path / "nope.env"))
+
+
+class TestDailyHeadline:
+    """固定每天跑时的文案：正常写"昨日社区动态"，异常时回退。
+
+    增量按"本次运行新看到的"判定，不是按事件时间。固定 10 点跑保证的是
+    运行时间固定，不保证内容都发生在昨天 —— 推送失败补推时，卡片里装的
+    是两天的内容，此时再写"昨日"就是说谎。故按距上次成功推送的间隔切换。
+    """
+
+    def test_normal_daily_run_says_yesterday(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  last_notify_at="2026-08-10T02:00:00+00:00",
+                  now=datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc))
+        text = card.render_text(d)
+        assert "昨日社区动态" in text
+        assert "自上次汇报" not in text
+
+    def test_gap_longer_than_a_day_falls_back(self):
+        """隔了三天（推送失败或停跑）→ 回退到带日期的说法。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  last_notify_at="2026-08-08T02:00:00+00:00",
+                  now=datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc))
+        text = card.render_text(d)
+        assert "自上次汇报" in text
+        assert "昨日社区动态" not in text
+
+    def test_slightly_late_run_still_says_yesterday(self):
+        """机器起停、任务延迟让间隔浮动到 30 小时，仍算正常日报。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  last_notify_at="2026-08-09T20:00:00+00:00",
+                  now=datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc))
+        assert "昨日社区动态" in card.render_text(d)
+
+    def test_no_previous_notify_falls_back(self):
+        """从没成功推送过时不能称"昨日"。"""
+        d = build(UpsertResult([_commit("a")], []), last_notify_at="")
+        assert "昨日社区动态" not in card.render_text(d)

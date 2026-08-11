@@ -8,6 +8,7 @@
 events.py，下游是 notify/。这个边界是为了以后加网页看板或多维表格时
 不用改这里。
 """
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -56,6 +57,18 @@ CREATE TABLE IF NOT EXISTS event_state_changes (
     new_state TEXT,
     run_id    INTEGER NOT NULL REFERENCES runs(run_id)
 );
+
+-- 每次推送的战报存档。可溯源，也能拿出来重发（测试通道时不必等真实增量）。
+-- 丢失无所谓：这是派生数据，重建不了也不影响统计与增量判定。
+CREATE TABLE IF NOT EXISTS digests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     INTEGER NOT NULL REFERENCES runs(run_id),
+    created_at TEXT NOT NULL,      -- UTC ISO
+    payload    TEXT NOT NULL,      -- 完整卡片 JSON，原样可重发
+    sent       INTEGER             -- NULL=未发（dry-run）0=失败 1=成功
+);
+
+CREATE INDEX IF NOT EXISTS idx_digests_run ON digests(run_id);
 
 CREATE INDEX IF NOT EXISTS idx_changes_run ON event_state_changes(run_id);
 """
@@ -166,6 +179,46 @@ class EventStore:
         return self.conn.execute(
             "SELECT COUNT(*) FROM runs WHERE run_id > ? AND finished_at IS NOT NULL",
             (last,)).fetchone()[0]
+
+    # ---- 战报存档 ----
+
+    def save_digest(self, run_id: int, payload: dict,
+                    sent: Optional[bool] = None) -> int:
+        """存一份战报，返回自增 id。
+
+        存的是完整卡片 JSON 而非渲染前的结构：这样取出来可以原样重发，
+        不依赖当时的代码版本 —— 渲染逻辑改了，旧存档照样发得出去。
+        """
+        cur = self.conn.execute(
+            "INSERT INTO digests (run_id, created_at, payload, sent) "
+            "VALUES (?,?,?,?)",
+            (run_id, _now(), json.dumps(payload, ensure_ascii=False),
+             None if sent is None else int(sent)))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def mark_digest_sent(self, digest_id: int, ok: bool) -> None:
+        self.conn.execute("UPDATE digests SET sent=? WHERE id=?",
+                          (1 if ok else 0, digest_id))
+        self.conn.commit()
+
+    def latest_digest(self) -> Optional[dict]:
+        """最近一份战报的卡片 JSON。库里没有时返回 None。"""
+        row = self.conn.execute(
+            "SELECT payload FROM digests ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload"])
+        except (ValueError, TypeError):
+            return None
+
+    def list_digests(self, limit: int = 20) -> list:
+        """战报存档列表，新的在前。用于排查"某天到底发了什么"。"""
+        rows = self.conn.execute(
+            "SELECT id, run_id, created_at, sent FROM digests "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def mark_notify_baseline(self) -> int:
         """把最后一次跑完的运行标记为已推送，划掉此前的全部积压。
