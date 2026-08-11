@@ -88,7 +88,8 @@ python -m contributors --since 2026-01-01 --notify-dry-run
 | `--refresh` | 关 | 强制重新 fetch |
 | `--exclude-bots` | 关 | 把 `is_bot` 账号移出主表。默认保留并标注 |
 | `--cache-dir` | `./.cache` | 缓存目录 |
-| `--out-dir` | `./output` | 输出目录 |
+| `--out-dir` | 见右 | 输出目录。默认全量 `./output/all`，`--daily` 为 `./output/daily` |
+| `--daily` | 关 | 日常模式：只维护 `by_repo.csv` 与 `summary.csv`，跳过附表 |
 | `--format` | `all` | `csv` / `md` / `json` / `all` |
 | `--exclude-paths` | — | 行数统计的额外排除模式，逗号分隔，追加到内置列表 |
 | `--jobs` | `4` | 尚未实现，传入无效果 |
@@ -98,6 +99,7 @@ python -m contributors --since 2026-01-01 --notify-dry-run
 | `--notify` | 关 | 跑完把增量战报推送到飞书群 |
 | `--notify-dry-run` | 关 | 渲染卡片打到 stdout，不发送 |
 | `--notify-empty` | 关 | 无新增时也推送（默认跳过，避免刷屏） |
+| `--mark-notified` | 关 | 把当前进度记为已推送基线，划掉历史积压。首次建库后用一次 |
 
 > `--no-fetch` 完全跳过 GitHub API，PR/Issue/Review/Comment 各列全为 0，email→login 映射仅靠 noreply 邮箱正则解析。适用于改时间窗快速验证 commit 口径；出正式名单用完整跑法。
 
@@ -123,11 +125,13 @@ github_contributors/
 │       ├── digest.py       # 库里的变化聚合成战报结构
 │       ├── card.py         # 战报渲染成卡片 JSON（纯函数）
 │       └── feishu.py       # 签名、POST、重试
-├── tests/                  # 377 个测试，与源码模块一一对应
+├── tests/                  # 396 个测试，与源码模块一一对应
 ├── docs/                   # 快速开始与设计文档
 ├── .cache/                 # 运行时缓存（已忽略）
 ├── data/                   # 事件历史库（已忽略）
-└── output*/                # 结果目录（已忽略）
+└── output/                 # 结果目录（已忽略）
+    ├── daily/              #   日常模式：只有两张总表
+    └── all/                #   全量模式：完整产出
 ```
 
 ### 模块职责与依赖方向
@@ -283,7 +287,7 @@ email→login 映射的来源（按优先级）：
 ### 输出文件
 
 ```
-output/
+output/all/                   # 全量模式（默认）
 ├── summary.csv           # 跨仓库汇总，一人一行，按 commits 降序
 ├── by_repo.csv           # 主表，一人一仓库一行（最细粒度）
 ├── repos/<name>.csv      # 按仓库拆分，可分发各项目 maintainer
@@ -293,7 +297,15 @@ output/
 ├── bots.csv              # 被识别为 bot 的账号，供核对误判
 ├── ai_assisted.csv       # AI 助手提交追溯到的指派人，供参考
 └── run_meta.json         # 运行参数、跳过/失败仓库、API 点数消耗
+
+output/daily/                 # 日常模式（--daily）
+├── summary.csv           # 同上
+├── by_repo.csv           # 同上
+└── run_meta.json         # 同上
 ```
+
+日常模式只维护两张总表：其余附表是全量统计时的人工核对材料，每天重写既慢
+又没人看。两种模式默认写不同目录，日常跑不会覆盖全量统计的产出。
 
 `ai_assisted.csv` 从 AI 助手提交的 `Co-authored-by` 追溯实际指派人，列为
 `repo`、`name`、`email`、`ai_commits`（该指派人名下的 AI 提交数）、`guess`（同邮箱的已知账号）。

@@ -25,7 +25,7 @@ WANT_ISSUE = [5947, 5948, 5949, 5950, 5952, 5953, 5954, 5957, 5959]
 
 def load_rows():
     rows = []
-    with open("output_all/by_repo.csv", encoding="utf-8-sig") as fh:
+    with open("output/all/by_repo.csv", encoding="utf-8-sig") as fh:
         for r in csv.DictReader(fh):
             rows.append(Row(
                 repo=r["repo"], login=r["login"], name=r["name"],

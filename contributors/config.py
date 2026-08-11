@@ -105,6 +105,9 @@ class Config:
     notify_empty: bool = False
     # 把当前进度标记为已推送基线，划掉历史积压。首次部署时用一次。
     mark_notified: bool = False
+    # 日常模式：只维护 by_repo.csv 与 summary.csv 两张总表。
+    # 其余附表是全量统计时的人工核对材料，每天重写既慢又没人看。
+    daily: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -141,7 +144,12 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         help="把 is_bot 账号移出主表（默认保留并标注，删掉比加回去简单）",
     )
     p.add_argument("--cache-dir", default="./.cache")
-    p.add_argument("--out-dir", default="./output")
+    p.add_argument("--out-dir", default=None,
+                   help="输出目录。默认全量模式 ./output/all，"
+                        "--daily 模式 ./output/daily")
+    p.add_argument("--daily", action="store_true",
+                   help="日常模式：只维护 by_repo.csv 与 summary.csv 两张总表，"
+                        "跳过附表。适合每天跑一次更新总量")
     p.add_argument(
         "--format", dest="fmt", choices=["csv", "md", "json", "all"], default="all"
     )
@@ -167,6 +175,8 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
 
     extra = [s.strip() for s in a.exclude_paths.split(",") if s.strip()]
+    # 两种模式默认写到各自的目录，避免日常跑覆盖全量统计的产出
+    out_dir = a.out_dir or ("./output/daily" if a.daily else "./output/all")
     return Config(
         org=a.org,
         since=since_dt,
@@ -180,7 +190,7 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         refresh=a.refresh,
         exclude_bots=a.exclude_bots,
         cache_dir=a.cache_dir,
-        out_dir=a.out_dir,
+        out_dir=out_dir,
         fmt=a.fmt,
         jobs=a.jobs,
         verbose=a.verbose,
@@ -190,4 +200,5 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         notify_dry_run=a.notify_dry_run,
         notify_empty=a.notify_empty,
         mark_notified=a.mark_notified,
+        daily=a.daily,
     )

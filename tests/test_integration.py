@@ -707,3 +707,40 @@ def test_fork_upstream_compare_failure_degrades_to_commits(tmp_path):
     rows, _ = build_rows(_fork_repo(), {"dev@x.com": gs}, {},
                          IdentityResolver(), mk_cfg(tmp_path), None)
     assert rows[0].commits_not_in_upstream == 55
+
+
+# --- 日常模式：只维护两张总表 ---
+#
+# 用户的用法是每天跑一次更新总量，只看 by_repo.csv 与 summary.csv。
+# 其余附表（per-repo、md、json、unmatched、bots、ai_assisted）是全量
+# 统计时的人工核对材料，每天重写既慢又没人看。
+
+def test_daily_mode_writes_only_two_tables(tiny_repo, monkeypatch):
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    m.run(cfg, token="fake")
+    out = Path(cfg.out_dir)
+
+    assert (out / "by_repo.csv").is_file()
+    assert (out / "summary.csv").is_file()
+    # run_meta.json 保留：排障与增量判定都要读它
+    assert (out / "run_meta.json").is_file()
+
+    for gone in ("contributors.md", "contributors.json", "unmatched.csv",
+                 "bots.csv", "ai_assisted.csv"):
+        assert not (out / gone).exists(), f"日常模式不该写 {gone}"
+    assert not (out / "repos").exists(), "日常模式不该写 per-repo 目录"
+
+
+def test_full_mode_still_writes_everything(tiny_repo, monkeypatch):
+    """全量模式产出不变，日常模式是新增而非替换。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    m.run(cfg, token="fake")
+    out = Path(cfg.out_dir)
+
+    for name in ("by_repo.csv", "summary.csv", "contributors.md",
+                 "contributors.json", "unmatched.csv", "bots.csv",
+                 "ai_assisted.csv", "run_meta.json"):
+        assert (out / name).is_file(), f"全量模式应写 {name}"
+    assert (out / "repos" / "tiny.csv").is_file()

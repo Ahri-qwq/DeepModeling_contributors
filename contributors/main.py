@@ -537,6 +537,14 @@ def _year_totals(rows: list) -> dict:
 
 def _write_outputs(rows, bots, ai_records, resolver, cfg, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
+
+    # 日常模式只维护两张总表。其余附表（per-repo、md、json、unmatched、
+    # bots、ai_assisted）是全量统计时的人工核对材料，每天重写既慢又没人看。
+    if getattr(cfg, "daily", False):
+        write_csv(summarize(rows), out / "summary.csv", cfg)
+        write_csv(rows, out / "by_repo.csv", cfg)
+        return
+
     per_repo: dict = {}
     for r in rows:
         per_repo.setdefault(r.repo, []).append(r)
