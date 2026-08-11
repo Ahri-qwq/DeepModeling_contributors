@@ -416,6 +416,35 @@ def _row(login, name, email, commits, repo="tiny", **kw):
     return Row(**d)
 
 
+def test_year_totals_omits_pr_issue_when_api_data_absent():
+    """离线路径下 PR/issue 三项必须是 None 而非 0。
+
+    --no-fetch 或无当天 API 缓存时 collect_api_stats 返回空，三项若加成 0，
+    日报底部会写"今年 0 个 PR 合并"，而上方分区正列着几百个合并的 PR。
+    实测在真实 dry-run 中触发过。
+    """
+    from contributors.main import _year_totals
+    rows = [_row("a", "A", "a@x.com", 10), _row("b", "B", "b@x.com", 5)]
+    t = _year_totals(rows)
+    assert t["commits"] == 15
+    assert t["pr_merged"] is None
+    assert t["pr_created"] is None
+    assert t["issue_created"] is None
+
+
+def test_year_totals_reports_pr_issue_when_present():
+    """有 API 数据时照常汇总。"""
+    from contributors.main import _year_totals
+    rows = [_row("a", "A", "a@x.com", 10, pr_created=3, pr_merged=2,
+                 issue_created=1),
+            _row("b", "B", "b@x.com", 5, pr_created=1, pr_merged=1,
+                 issue_created=4)]
+    t = _year_totals(rows)
+    assert t["pr_created"] == 4
+    assert t["pr_merged"] == 3
+    assert t["issue_created"] == 5
+
+
 def test_merges_unlinked_row_into_matching_login_row():
     from contributors.main import merge_by_name
     rows = [_row("wanghan-iapcm", "Han Wang", "a@noreply", 110),

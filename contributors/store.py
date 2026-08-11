@@ -167,6 +167,26 @@ class EventStore:
             "SELECT COUNT(*) FROM runs WHERE run_id > ? AND finished_at IS NOT NULL",
             (last,)).fetchone()[0]
 
+    def mark_notify_baseline(self) -> int:
+        """把最后一次跑完的运行标记为已推送，划掉此前的全部积压。
+
+        存在的理由：is_first_run 只挡住第一次运行，而 pending_since_last_notify
+        查的是"上次成功推送之后的全部"。从没成功推送过时它会把建库时录入的
+        几千条历史一次性交出来 —— 而积压又只有推送成功才清空，形成死循环。
+
+        典型用法是首次部署：先跑一次建库，用这个方法定基线，之后每天跑
+        才是真正意义的增量。返回被标记的 run_id，库里没有跑完的运行时返回 0。
+        """
+        row = self.conn.execute(
+            "SELECT MAX(run_id) FROM runs WHERE finished_at IS NOT NULL"
+        ).fetchone()
+        run_id = row[0] or 0
+        if run_id:
+            self.conn.execute("UPDATE runs SET notified=1 WHERE run_id=?",
+                              (run_id,))
+            self.conn.commit()
+        return run_id
+
     def _last_notified_run(self) -> int:
         row = self.conn.execute(
             "SELECT MAX(run_id) FROM runs WHERE notified=1").fetchone()

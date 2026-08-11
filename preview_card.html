@@ -1,0 +1,67 @@
+<title>飞书卡片预览 · DeepModeling 社区日报</title>
+<style>
+:root{
+  --ground:#f2f3f5; --surface:#ffffff; --ink:#1f2329; --muted:#8f959e;
+  --line:#dee0e3; --brand:#3370ff; --panel:#ffffff; --shadow:rgba(31,35,41,.12);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#14161a; --surface:#1f2329; --ink:#e7e9eb; --muted:#8f959e;
+    --line:#2f343a; --brand:#4e83fd; --panel:#1a1d21; --shadow:rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#14161a; --surface:#1f2329; --ink:#e7e9eb; --muted:#8f959e;
+  --line:#2f343a; --brand:#4e83fd; --panel:#1a1d21; --shadow:rgba(0,0,0,.5);
+}
+*{box-sizing:border-box}
+body{
+  margin:0; padding:32px 24px 56px; background:var(--ground); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+  display:flex; flex-direction:column; align-items:center; gap:20px;
+}
+.eyebrow{
+  width:100%; max-width:560px; font-size:12px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted);
+}
+.card{
+  width:100%; max-width:560px; background:var(--surface); border-radius:8px;
+  overflow:hidden; box-shadow:0 2px 14px var(--shadow);
+}
+.hd{
+  background:var(--brand); color:#fff; padding:12px 16px;
+  font-size:15px; font-weight:600;
+}
+.bd{padding:14px 16px; font-size:14px; line-height:1.75; overflow-wrap:anywhere}
+.bd a{color:var(--brand); text-decoration:none}
+.bd a:hover{text-decoration:underline}
+.bd a:focus-visible{outline:2px solid var(--brand); outline-offset:2px}
+.au{color:var(--muted)}
+.notes{
+  width:100%; max-width:560px; background:var(--panel); border:1px solid var(--line);
+  border-radius:8px; padding:14px 16px; font-size:13px; line-height:1.7;
+}
+.notes h2{margin:0 0 8px; font-size:12px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600}
+.notes ul{margin:0; padding-left:18px}
+.notes li{margin:3px 0}
+.notes code{
+  background:var(--ground); border:1px solid var(--line); border-radius:3px;
+  padding:0 4px; font-size:12px;
+}
+.meta{
+  width:100%; max-width:560px; font-size:12px; color:var(--muted);
+  font-variant-numeric:tabular-nums;
+}
+</style>
+<p class="eyebrow">飞书卡片渲染预览</p>
+<div class="card"><div class="hd">DeepModeling 社区日报 2026-08-11</div><div class="bd">自上次汇报（08-10 10:00）以来：<br>17 次提交 · 1 个 PR 合并 · 8 个 PR 新建 · 9 个 issue<br><br><b>合并的 PR</b><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5958">deepmd-kit #5958</a> feat(pt_expt): align the training runtime with pt <span class="au">@OutisLi</span><br><br><b>新建的 PR</b><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5963">deepmd-kit #5963</a> fix(dpa4): align pt_expt training and native-spin fine-tuning <span class="au">@OutisLi</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5962">deepmd-kit #5962</a> feat(lmdb): support mixed-size batches and lazy label availability <span class="au">@OutisLi</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5961">deepmd-kit #5961</a> docs(skills): add structured DPA4 workflow support <span class="au">@SchrodingersCattt</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5960">deepmd-kit #5960</a> perf(dpa4): stop broadcasting weights across the node axis; fix use_amp serialization <span class="au">@wanghan-iapcm</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5956">deepmd-kit #5956</a> fix(pt_expt): reuse the stored min_nbor_dist and batch the neighbor statistics <span class="au">@yckbz</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5955">deepmd-kit #5955</a> [pre-commit.ci] pre-commit autoupdate <span class="au">@pre-commit-ci</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5951">deepmd-kit #5951</a> docs: refresh project landing pages <span class="au">@njzjz</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/pull/5946">deepmd-kit #5946</a> fix(dpmodel): use graph forward for output statistics <span class="au">@Stardust0831</span><br><br><b>新增 issue</b><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5959">deepmd-kit #5959</a> pt_expt change-bias does not preserve the lower-input ABI of .pt2 models <span class="au">@OutisLi</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5957">deepmd-kit #5957</a> SFPG: add a carry-all/reciprocal graph fast path (dst reduction + one broadcast) for the pt_expt graph lower <span class="au">@wanghan-iapcm</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5954">deepmd-kit #5954</a> Record exact label availability when building LMDB datasets <span class="au">@OutisLi</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5953">deepmd-kit #5953</a> bug(pt-expt): compiled DPA2 lower miscompiles descriptors that depend on atype_ext <span class="au">@njzjz-bot</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5952">deepmd-kit #5952</a> ci: build and test Paddle custom operator with CUDA <span class="au">@njzjz-bot</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5950">deepmd-kit #5950</a> DeepMD training problem <span class="au">@1997sankha</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5949">deepmd-kit #5949</a> fix(pt-expt): preserve DOS width in exported models <span class="au">@njzjz</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5948">deepmd-kit #5948</a> Express analytical bridging as an explicit linear_ener composition instead of a bridging_method flag <span class="au">@wanghan-iapcm</span><br>· <a href="https://github.com/deepmodeling/deepmd-kit/issues/5947">deepmd-kit #5947</a> Deprecate descriptor-scoped exclude_types in favour of the model-level build-seam owner <span class="au">@wanghan-iapcm</span><br><br>今年至今：366 位贡献者 · 2527 次提交 · 1303 个 PR 合并 · 1860 个 PR 新建 · 765 个 issue</div></div>
+<div class="notes">
+  <h2>这次改动要看的三处</h2>
+  <ul>
+    <li>每条标题末尾的 <code>@提交者</code>，取原始 login，不做身份归并</li>
+    <li>issue #5950 若作者取不到会整个省略后缀，此处 API 有值故照常显示</li>
+    <li>底部四项累计，数字取自 <code>summary.csv</code> 已有列，不额外发 API 请求</li>
+  </ul>
+</div>
+<p class="meta">卡片 3288 字节 / 上限 18432 · 数据来自 08-10 缓存，非实时 · 实际样式以飞书客户端为准</p>

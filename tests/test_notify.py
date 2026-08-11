@@ -206,6 +206,20 @@ class TestRenderText:
         assert "1860 个 PR 新建" in text
         assert "765 个 issue" in text
 
+    def test_totals_omits_pr_and_issue_when_unavailable(self):
+        """拿不到 PR/issue 数据时整项省略，不能显示 0。
+
+        --no-fetch 或无当天 API 缓存时 collect_api_stats 返回空，三项会被
+        加成 0。而上方分区可能正列着几百个合并的 PR —— 底部写"0 个 PR 合并"
+        会让整条日报自相矛盾。实测确认过这个场景。
+        """
+        d = build(UpsertResult([], []), total_contributors=51,
+                  total_commits=506, total_prs_merged=None,
+                  total_prs_created=None, total_issues=None)
+        text = card.render_text(d)
+        assert "51 位贡献者" in text and "506 次提交" in text
+        assert "0 个 PR" not in text and "0 个 issue" not in text
+
     def test_totals_line_labels_partial_run_scope(self):
         """只跑部分仓库时必须标注范围。
 

@@ -232,3 +232,43 @@ class TestCorruption:
         assert s2.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
         s2.close()
         assert list(tmp_path.glob("events.db.corrupt-*")) == []
+
+
+class TestNotifyBaseline:
+    """把当前进度标记为已推送基线，划掉历史积压。
+
+    背景：is_first_run 只挡住第一次运行。第二次跑时它返回 False，推送流程
+    照常走，而 pending_since_last_notify 查的是"上次成功推送之后的全部"——
+    从没成功推送过时 _last_notified_run 返回 0，于是把建库时录入的几千条
+    历史全当成增量推出去。积压只有推送成功才清空，形成死循环。
+
+    实测触发过：种子运行录入 1606 条，第二次跑的卡片把今年一整年的
+    597 次提交 / 573 个 PR 合并当成"自上次汇报以来"。
+    """
+
+    def test_baseline_clears_backlog(self, store):
+        run = store.begin_run(since="2026-01-01", until="2026-08-10")
+        store.upsert_events([_pr(number=1), _commit(sha="a1")], run)
+        store.finish_run(run, repos_processed=1)
+
+        assert len(store.pending_since_last_notify().new_events) == 2
+        store.mark_notify_baseline()
+        assert store.pending_since_last_notify().new_events == []
+
+    def test_events_after_baseline_still_pending(self, store):
+        run1 = store.begin_run(since="2026-01-01", until="2026-08-10")
+        store.upsert_events([_pr(number=1)], run1)
+        store.finish_run(run1, repos_processed=1)
+        store.mark_notify_baseline()
+
+        run2 = store.begin_run(since="2026-01-01", until="2026-08-11")
+        store.upsert_events([_pr(number=2)], run2)
+        store.finish_run(run2, repos_processed=1)
+
+        pending = store.pending_since_last_notify()
+        assert [e.number for e in pending.new_events] == [2]
+
+    def test_baseline_on_empty_db_is_harmless(self, store):
+        """库里没有任何运行时调用不应报错。"""
+        store.mark_notify_baseline()
+        assert store.pending_since_last_notify().new_events == []

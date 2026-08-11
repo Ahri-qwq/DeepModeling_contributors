@@ -444,6 +444,13 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         print(f"事件库 {cfg.events_db}：本次新增 {len(result.new_events)} 条，"
               f"状态变更 {len(result.state_changes)} 条")
 
+        # 基线在 finish_run 之后、查询增量之前，且不要求 --notify：
+        # 它标记的是"截至本次运行的一切都算已汇报过"，之后跑的才是真正增量。
+        if getattr(cfg, "mark_notified", False):
+            marked = store.mark_notify_baseline()
+            print(f"已把运行 {marked} 记为已推送基线，此前的历史积压不再推送")
+            return
+
         if not (cfg.notify or cfg.notify_dry_run):
             return
 
@@ -463,7 +470,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             total_prs_created=totals["pr_created"],
             total_issues=totals["issue_created"],
             repos_processed=meta.get("repos_processed"),
-            repos_total=meta.get("repos_total"),
+            repos_total=meta.get("repos_in_scope"),
         )
 
         if d.is_empty and not cfg.notify_empty:
@@ -509,13 +516,22 @@ def _year_totals(rows: list) -> dict:
     也会计入，故它不等于"窗口内新建的 PR 数"。保持这个口径是有意的，
     因为人们要核对的正是 summary.csv 本身。数据全部来自已落盘的统计，
     不额外发 API 请求。
+
+    三项全为 0 时返回 None 而非 0：--no-fetch 或无当天 API 缓存时
+    collect_api_stats 返回空，三项会被加成 0，而战报上方可能正列着几百个
+    合并的 PR —— 底部写"今年 0 个 PR 合并"会让整条日报自相矛盾。
+    区分不了"真的一个都没有"与"没取到数据"时，宁可不显示。
     """
     merged = summarize(rows)
+    pr_created = sum(r.pr_created for r in merged)
+    pr_merged = sum(r.pr_merged for r in merged)
+    issue_created = sum(r.issue_created for r in merged)
+    has_api = bool(pr_created or pr_merged or issue_created)
     return {
         "commits": sum(r.commits for r in merged),
-        "pr_created": sum(r.pr_created for r in merged),
-        "pr_merged": sum(r.pr_merged for r in merged),
-        "issue_created": sum(r.issue_created for r in merged),
+        "pr_created": pr_created if has_api else None,
+        "pr_merged": pr_merged if has_api else None,
+        "issue_created": issue_created if has_api else None,
     }
 
 
@@ -563,6 +579,11 @@ def _write_meta(all_repos, kept, skipped, failures, rows, bots, ai_records,
         "line_caveat": LINE_CAVEAT if cfg.count_lines else None,
         "repos_total": len(all_repos),
         "repos_processed": len(kept) - len(failures),
+        # 本次实际纳入统计范围的仓库数（--repos 过滤、跳过 fork/归档/超限
+        # 之后剩下的）。战报的范围标注要和它比，而不是和组织下全部仓库比 ——
+        # 全量跑本来就只覆盖 67 个里的 34 个，拿 67 当分母会让每次运行
+        # 都显示成"局部"。
+        "repos_in_scope": len(kept),
         "skipped": skipped,
         "failures": failures,
         "contributors": len(summarize(rows)),

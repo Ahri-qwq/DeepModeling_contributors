@@ -11,6 +11,7 @@
 """
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 
 from contributors.config import Config
 
@@ -19,14 +20,26 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_no_test_writes_real_data_dir():
-    """真实 data/events.db 不该被测试进程创建。
+    """真实事件库里不该出现测试夹具的数据。
 
-    conftest 的 autouse fixture 会把 Config 的默认库路径改到临时目录，
-    所以整个套件跑完，仓库里的 data/ 都不该冒出新文件。
+    不能简单断言"文件不存在"：生产环境本来就该有 data/events.db，
+    那是正常产物。要守的是它没被测试写脏 —— 判据是库里出现 tiny，
+    那是 test_integration 现场造的小仓库，真实运行绝不会有这个名字。
     """
     real_db = REPO_ROOT / "data" / "events.db"
-    assert not real_db.exists(), (
-        f"测试污染了真实事件库 {real_db}。"
+    if not real_db.exists():
+        return  # 还没跑过真实运行，自然干净
+
+    conn = sqlite3.connect(f"file:{real_db}?mode=ro", uri=True)
+    try:
+        repos = {r[0] for r in conn.execute("SELECT DISTINCT repo FROM events")}
+    except sqlite3.DatabaseError:
+        return  # 库损坏是另一条防线的事，不在这里断言
+    finally:
+        conn.close()
+
+    assert "tiny" not in repos, (
+        f"测试污染了真实事件库 {real_db}：库里出现了夹具仓库 tiny。"
         "检查 conftest 的 isolate_real_paths fixture 是否失效。"
     )
 

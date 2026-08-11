@@ -103,6 +103,8 @@ class Config:
     notify: bool = False
     notify_dry_run: bool = False
     notify_empty: bool = False
+    # 把当前进度标记为已推送基线，划掉历史积压。首次部署时用一次。
+    mark_notified: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -157,6 +159,9 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
                    help="渲染卡片打到 stdout，不发送")
     p.add_argument("--notify-empty", action="store_true",
                    help="无新增时也推送（默认跳过，避免每天刷屏）")
+    p.add_argument("--mark-notified", action="store_true",
+                   help="把当前进度记为已推送基线，划掉历史积压。"
+                        "首次建库后用一次，之后每天跑才是真正的增量")
 
     a = p.parse_args(argv)
     since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
@@ -184,4 +189,5 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         notify=a.notify,
         notify_dry_run=a.notify_dry_run,
         notify_empty=a.notify_empty,
+        mark_notified=a.mark_notified,
     )
