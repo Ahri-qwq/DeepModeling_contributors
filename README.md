@@ -414,7 +414,7 @@ py -3.12 -m contributors --since 2026-01-01 --notify
 ## 开发
 
 ```bash
-python -m pytest -q          # 377 个测试，不联网
+python -m pytest -q          # 394 个测试，不联网
 ```
 
 Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。
