@@ -363,6 +363,12 @@ def run(cfg, token: str) -> int:
     out = Path(cfg.out_dir)
     started = time.time()
 
+    # 拆分模式的推送那步：不跑采集管线，只算增量并推。秒级完成，
+    # 所以计划任务可以准点触发而不必担心抓取拖时间。
+    # 底部累计从上一步落盘的 by_repo.csv 读，不重算也不发 API 请求。
+    if getattr(cfg, "only_notify", False):
+        return _notify_only(cfg, out)
+
     all_repos = _load_repos(cm, cfg, token)
     if all_repos is None:
         print("指定了 --no-fetch，但本地没有仓库清单缓存。"
@@ -429,6 +435,62 @@ def run(cfg, token: str) -> int:
     return 0
 
 
+def _read_rows_csv(path: Path) -> list:
+    """从上一步落盘的 by_repo.csv 读回行，供 --only-notify 算底部累计。
+
+    重读 CSV 而非重跑管线：推送那步要秒级完成，且不该再花 API 点数。
+    文件缺失时返回空列表 —— 底部四项会整体省略，好过让推送失败。
+    """
+    if not path.is_file():
+        return []
+    rows = []
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        for r in csv.DictReader(fh):
+            try:
+                rows.append(Row(
+                    repo=r.get("repo", ""), login=r.get("login", ""),
+                    name=r.get("name", ""), email=r.get("email", ""),
+                    github_url=r.get("github_url", ""),
+                    commits=int(r.get("commits") or 0),
+                    commits_loose=int(r.get("commits_loose") or 0),
+                    commits_not_in_upstream=int(
+                        r.get("commits_not_in_upstream") or 0),
+                    pr_created=int(r.get("pr_created") or 0),
+                    pr_merged=int(r.get("pr_merged") or 0),
+                    pr_reviewed=int(r.get("pr_reviewed") or 0),
+                    issue_created=int(r.get("issue_created") or 0),
+                    issue_commented=int(r.get("issue_commented") or 0),
+                    is_fork=r.get("is_fork") == "True",
+                    upstream=r.get("upstream") or "",
+                    upstream_family=r.get("upstream_family") or "",
+                    is_bot=r.get("is_bot") == "True",
+                    is_ai_assistant=r.get("is_ai_assistant") == "True"))
+            except (ValueError, TypeError):
+                continue          # 单行坏掉不该让整次推送失败
+    return rows
+
+
+def _notify_only(cfg, out: Path) -> int:
+    """只算增量并推送，不跑采集管线。
+
+    退出码沿用既有原则：推送失败不改退出码。这里连统计都没跑，
+    更没有"数据失败"可言，所以一律返回 0。
+    """
+    rows = _read_rows_csv(out / "by_repo.csv")
+    if not rows:
+        print(f"注意：{out / 'by_repo.csv'} 不存在或为空，"
+              "底部累计将省略。请先跑一次 --no-notify")
+
+    meta = {"contributors": len(summarize(rows)) if rows else None,
+            "repos_processed": None, "repos_in_scope": None,
+            "window": {"since": "", "until": ""}}
+    try:
+        _record_and_notify([], meta, cfg, 0, rows)
+    except Exception as exc:                       # noqa: BLE001
+        print(f"注意：推送失败（{exc}）")
+    return 0
+
+
 def _record_and_notify(events, meta, cfg, repos_processed: int,
                        rows: list) -> None:
     """把事件写进历史库，按需推送战报。"""
@@ -467,6 +529,11 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         if getattr(cfg, "mark_notified", False):
             marked = store.mark_notify_baseline()
             print(f"已把运行 {marked} 记为已推送基线，此前的历史积压不再推送")
+            return
+
+        if getattr(cfg, "no_notify", False):
+            # 拆分模式的抓取那步：事件已入库，推送留给之后的 --only-notify
+            print("已记录事件，本次不推送（--no-notify）")
             return
 
         if not (cfg.notify or cfg.notify_dry_run):

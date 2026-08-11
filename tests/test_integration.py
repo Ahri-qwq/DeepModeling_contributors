@@ -744,3 +744,58 @@ def test_full_mode_still_writes_everything(tiny_repo, monkeypatch):
                  "ai_assisted.csv", "run_meta.json"):
         assert (out / name).is_file(), f"全量模式应写 {name}"
     assert (out / "repos" / "tiny.csv").is_file()
+
+
+# --- 拆分模式：抓取与推送分开跑 ---
+#
+# 用户要"10:30 抓、11:00 发"。抓取那步不推送，推送那步不重新抓取，
+# 但必须重新计算增量（否则等于重发存档，抓到的新数据不会进战报）。
+
+def test_fetch_only_records_events_without_pushing(tiny_repo, monkeypatch):
+    """--no-notify：跑统计、写事件库，但不推送。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, no_notify=True,
+                 notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    sent = []
+    monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
+    m.run(cfg, token="fake")
+    assert sent == [], "--no-notify 时不该发送"
+    # 事件仍要入库，否则下一步推送无从算增量
+    assert (Path(cfg.out_dir) / "by_repo.csv").is_file()
+
+
+def test_only_notify_pushes_without_running_pipeline(tiny_repo, monkeypatch):
+    """--only-notify：只算增量并推送，不跑采集管线。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+
+    # 先跑一次把事件入库并定基线
+    m.run(cfg, token="fake")
+    from contributors.store import EventStore
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    s.mark_notify_baseline()
+    s.close()
+
+    # 再造一条新事件，模拟抓取那步发现了新东西
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    run = s.begin_run()
+    from contributors.events import Event
+    s.upsert_events([Event("pr", "tiny", 42, None, "新 PR",
+                           "https://x/pull/42", "alice",
+                           "2026-08-12T00:00:00+00:00", "open")], run)
+    s.finish_run(run, repos_processed=1)
+    s.close()
+
+    cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                  only_notify=True, events_db=cfg.events_db)
+    sent = []
+    monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+    code = m.run(cfg2, token="fake")
+
+    assert code == 0
+    assert len(sent) == 1, "应推送一条"
+    body = sent[0]["card"]["elements"][0]["text"]["content"]
+    assert "#42" in body, "新增的 PR 必须出现在战报里"

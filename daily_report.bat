@@ -1,19 +1,24 @@
 @echo off
 rem ============================================================
-rem  DeepModeling community daily report - fetch and push
+rem  DeepModeling community daily report
 rem
-rem  Runs the pipeline then pushes immediately. Do NOT split this
-rem  into "fetch at 9:50, push at 10:00": fetch time depends on
-rem  how many new commits landed and on network speed (measured:
-rem  a single repo can exceed 10 minutes). A fixed push time would
-rem  send half-finished data on slow days.
+rem  Two ways to run:
 rem
-rem  Suggested trigger time: 9:30. Feishu docs advise avoiding
-rem  exact hour / half-hour marks (rate limit 100/min, 5/sec).
+rem   1) Split (current setup, matches "fetch 10:30, push 11:00"):
+rem        daily_report.bat --fetch    at 10:30 - fetch, no push
+rem        daily_report.bat --push     at 11:00 - push only, seconds
+rem      The push step does NOT re-fetch, so it finishes in seconds
+rem      and can be scheduled at an exact time. Fetch time varies a
+rem      lot (a single repo has taken over 600s), which is why the
+rem      two steps are separate.
 rem
-rem  Usage:
-rem    daily_report.bat          run and push
-rem    daily_report.bat --dry    render only, send nothing
+rem   2) Single chain (simpler, push time floats):
+rem        daily_report.bat            fetch then push immediately
+rem        daily_report.bat --dry      render only, send nothing
+rem
+rem  Feishu docs advise avoiding exact hour / half-hour marks
+rem  (rate limit 100/min, 5/sec). 10:33 / 11:03 are safer than
+rem  10:30 / 11:00.
 rem
 rem  NOTE: comments here are ASCII on purpose. cmd.exe re-reads the
 rem  batch file per line; non-ASCII text under a different active
@@ -44,16 +49,20 @@ if not exist "logs" mkdir "logs"
 for /f "tokens=1-3 delims=/- " %%a in ("%date%") do set TODAY=%%a-%%b-%%c
 set LOG=logs\daily-%TODAY%.log
 
-set NOTIFY=--notify
-if /i "%~1"=="--dry" set NOTIFY=--notify-dry-run
+rem Pick the mode from the first argument.
+set MODE=--notify
+set LABEL=fetch+push
+if /i "%~1"=="--fetch" set MODE=--no-notify& set LABEL=fetch only
+if /i "%~1"=="--push"  set MODE=--only-notify --notify& set LABEL=push only
+if /i "%~1"=="--dry"   set MODE=--notify-dry-run& set LABEL=dry run
 
 echo ============================================== >> "%LOG%"
-echo [%date% %time%] start >> "%LOG%"
+echo [%date% %time%] start (%LABEL%) >> "%LOG%"
 
-"%PYTHON%" -m contributors --daily --repos %REPOS% %NOTIFY% >> "%LOG%" 2>&1
+"%PYTHON%" -m contributors --daily --repos %REPOS% %MODE% >> "%LOG%" 2>&1
 set CODE=%ERRORLEVEL%
 
-echo [%date% %time%] done, exit code %CODE% >> "%LOG%"
+echo [%date% %time%] done (%LABEL%), exit code %CODE% >> "%LOG%"
 
 rem Exit code reflects the statistics run only. A failed push does
 rem not change it: the push self-heals (next run sends both days'

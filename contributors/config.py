@@ -110,6 +110,11 @@ class Config:
     daily: bool = False
     # 重发库里最近一份战报存档。调通道、验排版时不必等真实增量。
     resend_last: bool = False
+    # 拆分模式：抓取与推送分成两个计划任务。
+    # no_notify   跑统计与事件留存，但不推送（抓取那步）
+    # only_notify 只算增量并推送，跳过采集管线（推送那步）
+    no_notify: bool = False
+    only_notify: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -175,6 +180,12 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     p.add_argument("--resend-last", action="store_true",
                    help="重发库里最近一份战报存档，不重新计算增量。"
                         "调通道或验排版时用，配合 --notify-dry-run 可只看不发")
+    p.add_argument("--no-notify", action="store_true",
+                   help="跑统计与事件留存但不推送。用于把抓取与推送拆成"
+                        "两个计划任务时的抓取那一步")
+    p.add_argument("--only-notify", action="store_true",
+                   help="只计算增量并推送，跳过采集管线（秒级完成）。"
+                        "用于拆分模式的推送那一步，须先跑过 --no-notify")
 
     a = p.parse_args(argv)
     since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
@@ -207,4 +218,6 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         mark_notified=a.mark_notified,
         daily=a.daily,
         resend_last=a.resend_last,
+        no_notify=a.no_notify,
+        only_notify=a.only_notify,
     )
