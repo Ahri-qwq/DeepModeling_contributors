@@ -321,6 +321,24 @@ class EventStore:
 
         return UpsertResult(new_events, changes)
 
+    def events_between(self, start: str, end: str) -> list:
+        """按事件真实时间取区间内的事件，半开区间 [start, end)。
+
+        与 pending_since_last_notify 的口径**不同**，这是有意的：
+        日报按 first_seen_run 判定以保证不漏报（author date 是代码写成
+        时间，本地攒两周才推的提交按事件时间会永远漏掉）；而周报月报问的
+        是"上周/上月发生了什么"，那是时间概念，只能按 event_time。
+
+        两者混用会让七天日报之和对不上周报，那种数字打架最难解释。
+
+        参数是 UTC ISO 字符串。周月边界按东八区算好再转 UTC 传进来 ——
+        库里一律存 UTC，时区换算是调用方的事。
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM events WHERE event_time >= ? AND event_time < ? "
+            "ORDER BY event_time", (start, end)).fetchall()
+        return [self._row_to_event(r) for r in rows]
+
     @staticmethod
     def _row_to_event(r: sqlite3.Row) -> Event:
         return Event(

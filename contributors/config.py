@@ -122,6 +122,10 @@ class Config:
     # 失败仓库单独重试的轮数与轮间隔（秒）。只重跑失败的那几个。
     repo_retries: int = 3
     repo_retry_wait: int = 60
+    # 周报 / 月报：按事件真实时间统计区间，汇总加排行榜，不逐条列。
+    # 与日报的 first_seen_run 口径不同，理由见 notify/period.py。
+    weekly: bool = False
+    monthly: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -198,6 +202,11 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
                         "不重来整个流程——38 个仓库跑一次要 24 分钟")
     p.add_argument("--repo-retry-wait", type=int, default=60,
                    help="失败仓库重试的轮间隔秒数（默认 60）")
+    p.add_argument("--weekly", action="store_true",
+                   help="推送上周汇总（周一跑）。按事件真实时间统计，"
+                        "汇总加活跃贡献者/仓库排行榜，不跑采集管线")
+    p.add_argument("--monthly", action="store_true",
+                   help="推送上月汇总（每月一号跑）。口径同 --weekly")
     p.add_argument("--strict-repos", action="store_true",
                    help="有仓库处理失败时以非零退出。每天定时跑时建议打开，"
                         "让计划任务据此跳过推送，避免推出不完整的数据")
@@ -238,4 +247,6 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         strict_repos=a.strict_repos,
         repo_retries=a.repo_retries,
         repo_retry_wait=a.repo_retry_wait,
+        weekly=a.weekly,
+        monthly=a.monthly,
     )

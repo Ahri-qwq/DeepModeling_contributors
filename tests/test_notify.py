@@ -461,3 +461,86 @@ class TestFailedReposCarryOver:
     def test_no_carry_over_note_when_nothing_failed(self):
         d = build(UpsertResult([_commit("a")], []), failed_repos=[])
         assert "明天" not in card.render_text(d)
+
+
+class TestPeriodBoundaries:
+    """周月边界按东八区算，再转 UTC 查库。
+
+    库里存 UTC，而"上周一到周日"是本地概念。直接用 UTC 日界会让
+    周一早八点前的事件落到上一周去。
+    """
+
+    def test_last_week_range(self):
+        from contributors.notify.period import last_week_range
+        # 2026-08-12 是周三，上周应为 08-03(一) ~ 08-10(一，不含)
+        s, e = last_week_range(datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc))
+        assert s == "2026-08-02T16:00:00+00:00"   # 08-03 00:00 CST
+        assert e == "2026-08-09T16:00:00+00:00"   # 08-10 00:00 CST
+
+    def test_last_month_range(self):
+        from contributors.notify.period import last_month_range
+        s, e = last_month_range(datetime(2026, 8, 1, 3, 0, tzinfo=timezone.utc))
+        assert s == "2026-06-30T16:00:00+00:00"   # 07-01 00:00 CST
+        assert e == "2026-07-31T16:00:00+00:00"   # 08-01 00:00 CST
+
+    def test_last_month_range_across_year(self):
+        from contributors.notify.period import last_month_range
+        s, e = last_month_range(datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc))
+        assert s == "2025-11-30T16:00:00+00:00"   # 12-01 00:00 CST
+        assert e == "2025-12-31T16:00:00+00:00"   # 01-01 00:00 CST
+
+
+class TestPeriodDigest:
+    """周报月报：汇总加排行榜，不逐条列。"""
+
+    def _mk(self, n, kind="commit", author="alice", repo="r1"):
+        return Event(kind, repo, None if kind == "commit" else n,
+                     f"sha{n}" if kind == "commit" else None,
+                     f"标题{n}", f"https://x/{n}", author,
+                     "2026-08-05T10:00:00Z",
+                     "merged" if kind == "pr" else None)
+
+    def test_counts_by_kind(self):
+        from contributors.notify.period import build_period
+        evs = [self._mk(1), self._mk(2),
+               self._mk(3, "pr"), self._mk(4, "issue")]
+        d = build_period(evs, "上周", "08-03 ~ 08-09")
+        assert d.commit_count == 2
+        assert d.merged_count == 1
+        assert d.issue_count == 1
+
+    def test_top_contributors_ranked(self):
+        from contributors.notify.period import build_period
+        evs = ([self._mk(i, author="bob") for i in range(5)]
+               + [self._mk(i + 10, author="alice") for i in range(2)])
+        d = build_period(evs, "上周", "范围")
+        assert d.top_contributors[0] == ("bob", 5)
+        assert d.top_contributors[1] == ("alice", 2)
+
+    def test_top_repos_ranked(self):
+        from contributors.notify.period import build_period
+        evs = ([self._mk(i, repo="big") for i in range(4)]
+               + [self._mk(10, repo="small")])
+        d = build_period(evs, "上周", "范围")
+        assert d.top_repos[0] == ("big", 4)
+
+    def test_authorless_events_not_ranked(self):
+        """author 为 null 的事件不该冒出一个空名字的贡献者。"""
+        from contributors.notify.period import build_period
+        e = self._mk(1)
+        e.author_login = None
+        d = build_period([e], "上周", "范围")
+        assert all(name for name, _ in d.top_contributors)
+
+    def test_renders_period_card(self):
+        from contributors.notify.period import build_period, render_period
+        evs = [self._mk(1), self._mk(2, "pr", author="bob")]
+        payload = render_period(build_period(evs, "上周", "08-03 ~ 08-09"))
+        text = payload["card"]["elements"][0]["text"]["content"]
+        assert "上周" in text and "08-03 ~ 08-09" in text
+        assert "bob" in text
+
+    def test_empty_period_still_renders(self):
+        from contributors.notify.period import build_period, render_period
+        payload = render_period(build_period([], "上周", "范围"))
+        assert payload["msg_type"] == "interactive"

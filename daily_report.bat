@@ -8,6 +8,12 @@ rem    daily_report.bat --push    push only (seconds)
 rem    daily_report.bat --daily   fetch, then push ONLY if fetch ok
 rem    daily_report.bat           fetch then push (same as --daily)
 rem    daily_report.bat --dry     render only, send nothing
+rem    daily_report.bat --weekly  push last week's summary (Mondays)
+rem    daily_report.bat --monthly push last month's summary (1st)
+rem
+rem  Weekly/monthly read the event DB only (seconds, no fetch) and
+rem  count by the event's real timestamp, not by "first seen" like
+rem  the daily report. They do not touch the daily baseline.
 rem
 rem  Why --daily chains them: with two independent scheduled tasks,
 rem  a failed fetch still lets the push run, which then reports the
@@ -24,8 +30,12 @@ rem  If you prefer two separate scheduled tasks (exact push time),
 rem  use --fetch and --push, and check the log for the fetch exit
 rem  code. See STATUS file written below.
 rem
+rem  Suggested schedule (full run takes ~25 min, so leave margin):
+rem    10:00  daily_report.bat --fetch
+rem    11:03  daily_report.bat --push
 rem  Feishu docs advise avoiding exact hour / half-hour marks
-rem  (rate limit 100/min, 5/sec). Prefer 10:33 / 11:03.
+rem  (rate limit 100/min, 5/sec), hence 11:03 rather than 11:00.
+rem  The fetch step has no such constraint - it sends nothing.
 rem
 rem  NOTE: comments here are ASCII on purpose. cmd.exe re-reads the
 rem  batch file per line; non-ASCII text under a different active
@@ -80,8 +90,10 @@ if /i "%ACTION%"=="--fetch" goto do_fetch
 if /i "%ACTION%"=="--push"  goto do_push
 if /i "%ACTION%"=="--dry"   goto do_dry
 if /i "%ACTION%"=="--daily" goto do_chain
+if /i "%ACTION%"=="--weekly" goto do_weekly
+if /i "%ACTION%"=="--monthly" goto do_monthly
 echo Unknown option: %ACTION%
-echo Use --fetch, --push, --daily, or --dry
+echo Use --fetch, --push, --daily, --dry, --weekly, or --monthly
 exit /b 2
 
 rem ------------------------------------------------------------
@@ -105,6 +117,24 @@ echo [%date% %time%] start (dry run) >> "%LOG%"
 "%PYTHON%" -m contributors --daily %REPO_ARG% --notify-dry-run >> "%LOG%" 2>&1
 set CODE=!ERRORLEVEL!
 echo [%date% %time%] done (dry run), exit code !CODE! >> "%LOG%"
+exit /b !CODE!
+
+rem ------------------------------------------------------------
+:do_weekly
+echo ============================================== >> "%LOG%"
+echo [%date% %time%] start (weekly) >> "%LOG%"
+"%PYTHON%" -m contributors --weekly --notify >> "%LOG%" 2>&1
+set CODE=!ERRORLEVEL!
+echo [%date% %time%] done (weekly), exit code !CODE! >> "%LOG%"
+exit /b !CODE!
+
+rem ------------------------------------------------------------
+:do_monthly
+echo ============================================== >> "%LOG%"
+echo [%date% %time%] start (monthly) >> "%LOG%"
+"%PYTHON%" -m contributors --monthly --notify >> "%LOG%" 2>&1
+set CODE=!ERRORLEVEL!
+echo [%date% %time%] done (monthly), exit code !CODE! >> "%LOG%"
 exit /b !CODE!
 
 rem ------------------------------------------------------------

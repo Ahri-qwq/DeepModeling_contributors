@@ -23,7 +23,7 @@ from .git_stats import (
 )
 from .identity import IdentityResolver, is_ai_assistant, is_bot, is_marked_bot
 from .models import ApiStats
-from .notify import card, digest, feishu
+from .notify import card, digest, feishu, period
 from .output import (
     SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
     write_markdown,
@@ -376,6 +376,10 @@ def run(cfg, token: str) -> int:
     if getattr(cfg, "only_notify", False):
         return _notify_only(cfg, out)
 
+    # 周报 / 月报：同样只读库，不跑采集管线。秒级完成。
+    if getattr(cfg, "weekly", False) or getattr(cfg, "monthly", False):
+        return _notify_period(cfg)
+
     all_repos = _load_repos(cm, cfg, token)
     if all_repos is None:
         print("指定了 --no-fetch，但本地没有仓库清单缓存。"
@@ -529,6 +533,47 @@ def _notify_only(cfg, out: Path) -> int:
         _record_and_notify([], meta, cfg, 0, rows)
     except Exception as exc:                       # noqa: BLE001
         print(f"注意：推送失败（{exc}）")
+    return 0
+
+
+def _notify_period(cfg) -> int:
+    """推送周报或月报。只读事件库，不跑采集管线。
+
+    退出码沿用既有原则：推送失败不改退出码。这里连统计都没跑，
+    更没有"数据失败"可言，故一律返回 0。
+    """
+    monthly = getattr(cfg, "monthly", False)
+    label = "上月" if monthly else "上周"
+    start, end = (period.last_month_range() if monthly
+                  else period.last_week_range())
+
+    store = EventStore(cfg.events_db)
+    try:
+        store.init_schema()
+        events = store.events_between(start, end)
+        d = period.build_period(events, label, period.range_text(start, end))
+        print(f"{label}（{d.range_text}）：{len(events)} 条事件，"
+              f"{d.contributor_total} 位贡献者")
+
+        if d.is_empty and not cfg.notify_empty:
+            print(f"{label}无活动，跳过推送（--notify-empty 可改变）")
+            return 0
+
+        payload = period.render_period(d)
+        if cfg.notify_dry_run:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+
+        # 周月报不参与日报的增量基线：它只是换个视角看同一批事件，
+        # 推送与否不该影响"上次成功推送"，否则会打乱日报的增量判定。
+        feishu.load_env()
+        try:
+            feishu.send(payload)
+            print(f"已推送{label}报到飞书群")
+        except feishu.FeishuError as exc:
+            print(f"注意：{label}报推送失败（{exc}）")
+    finally:
+        store.close()
     return 0
 
 

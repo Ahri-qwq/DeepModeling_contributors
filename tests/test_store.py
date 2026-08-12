@@ -336,3 +336,45 @@ class TestDigestArchive:
         s2.save_digest(run, {"a": 1})
         assert s2.latest_digest() == {"a": 1}
         s2.close()
+
+
+class TestPeriodQuery:
+    """按事件真实时间查区间，供周报月报用。
+
+    与日报的口径不同：日报按 first_seen_run（本次新看到的）判定以保证
+    不漏报；周报问的是"上周发生了什么"，那是时间概念，必须按 event_time。
+    两者混用会让七天日报之和对不上周报。
+    """
+
+    def _ev(self, key, when, kind="commit", author="alice", repo="r1"):
+        return Event(kind=kind, repo=repo,
+                     number=None if kind == "commit" else int(key[-2:]),
+                     sha=key if kind == "commit" else None,
+                     title=f"t{key}", url=f"https://x/{key}",
+                     author_login=author, event_time=when,
+                     state="merged" if kind == "pr" else None)
+
+    def test_filters_by_event_time_not_first_seen(self, store):
+        run = store.begin_run()
+        store.upsert_events([
+            self._ev("a1", "2026-08-03T10:00:00Z"),   # 区间前
+            self._ev("a2", "2026-08-05T10:00:00Z"),   # 区间内
+            self._ev("a3", "2026-08-12T10:00:00Z"),   # 区间后
+        ], run)
+        store.finish_run(run, repos_processed=1)
+
+        got = store.events_between("2026-08-04T00:00:00Z",
+                                   "2026-08-11T00:00:00Z")
+        assert [e.sha for e in got] == ["a2"]
+
+    def test_upper_bound_is_exclusive(self, store):
+        run = store.begin_run()
+        store.upsert_events([self._ev("b1", "2026-08-11T00:00:00Z")], run)
+        store.finish_run(run, repos_processed=1)
+        got = store.events_between("2026-08-04T00:00:00Z",
+                                   "2026-08-11T00:00:00Z")
+        assert got == []
+
+    def test_empty_range_returns_empty(self, store):
+        assert store.events_between("2026-01-01T00:00:00Z",
+                                    "2026-01-02T00:00:00Z") == []
