@@ -103,6 +103,7 @@ python -m contributors --since 2026-01-01 --notify-dry-run
 | `--resend-last` | 关 | 重发库里最近一份战报存档，不重算增量。调通道或验排版时用 |
 | `--no-notify` | 关 | 跑统计与事件留存但不推送。拆分模式的抓取那步 |
 | `--only-notify` | 关 | 只算增量并推送，跳过采集管线（秒级）。拆分模式的推送那步 |
+| `--strict-repos` | 关 | 有仓库处理失败时以非零退出。定时跑时建议打开 |
 
 > `--no-fetch` 完全跳过 GitHub API，PR/Issue/Review/Comment 各列全为 0，email→login 映射仅靠 noreply 邮箱正则解析。适用于改时间窗快速验证 commit 口径；出正式名单用完整跑法。
 
@@ -128,7 +129,7 @@ github_contributors/
 │       ├── digest.py       # 库里的变化聚合成战报结构
 │       ├── card.py         # 战报渲染成卡片 JSON（纯函数）
 │       └── feishu.py       # 签名、POST、重试
-├── tests/                  # 406 个测试，与源码模块一一对应
+├── tests/                  # 412 个测试，与源码模块一一对应
 ├── docs/                   # 快速开始与设计文档
 ├── .cache/                 # 运行时缓存（已忽略）
 ├── data/                   # 事件历史库（已忽略）
@@ -417,7 +418,7 @@ py -3.12 -m contributors --since 2026-01-01 --notify
 ## 开发
 
 ```bash
-python -m pytest -q          # 406 个测试，不联网
+python -m pytest -q          # 412 个测试，不联网
 ```
 
 Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。
