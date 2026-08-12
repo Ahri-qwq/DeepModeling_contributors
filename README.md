@@ -134,7 +134,7 @@ github_contributors/
 │       ├── card.py         # 战报渲染成卡片 JSON（纯函数）
 │       ├── period.py       # 周报月报：按事件真实时间聚合
 │       └── feishu.py       # 签名、POST、重试
-├── tests/                  # 432 个测试，与源码模块一一对应
+├── tests/                  # 435 个测试，与源码模块一一对应
 ├── daily_report.bat        # 计划任务入口，封装全部模式
 ├── docs/                   # 快速开始与设计文档
 ├── .cache/                 # 运行时缓存（已忽略）
@@ -388,7 +388,7 @@ PR 的合并是状态变更而非新增行，单独记录。上周创建、今�
 
 ### 周报与月报
 
-除日报外还可推送区间汇总，内容是数字加活跃贡献者/仓库排行榜，不逐条列
+除日报外还可推送区间汇总，内容是数字加活跃贡献者/仓库排行榜（周报各前 5，月报各前 10），不逐条列
 （一周几百条会刷屏，周月报的价值在趋势）：
 
 ```
@@ -479,7 +479,7 @@ schtasks /create /tn "DM月报"      /tr "C:\...\daily_report.bat --monthly" /sc
 ## 开发
 
 ```bash
-python -m pytest -q          # 432 个测试，不联网
+python -m pytest -q          # 435 个测试，不联网
 ```
 
 Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。

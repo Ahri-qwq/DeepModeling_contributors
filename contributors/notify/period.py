@@ -15,8 +15,10 @@ from typing import Optional
 
 from .card import SIZE_LIMIT, _escape
 
-# 排行榜各取前几名。取 5 是因为群消息里超过这个数就没人细看了。
-TOP_N = 5
+# 排行榜取前几名。周报取 5，月报取 10 —— 月度数据量大（实测一个月
+# 1583 条事件、71 位贡献者），前 5 名的区分度不够。
+TOP_N_WEEKLY = 5
+TOP_N_MONTHLY = 10
 
 CST = timezone(timedelta(hours=8))
 
@@ -82,7 +84,8 @@ def range_text(start_iso: str, end_iso: str) -> str:
     return f"{s.strftime('%m-%d')} ~ {e.strftime('%m-%d')}"
 
 
-def build_period(events: list, label: str, rng: str) -> PeriodDigest:
+def build_period(events: list, label: str, rng: str,
+                 top_n: int = TOP_N_WEEKLY) -> PeriodDigest:
     """把区间内的事件聚合成周报/月报结构。"""
     d = PeriodDigest(label=label, range_text=rng)
     by_author: dict = {}
@@ -107,9 +110,9 @@ def build_period(events: list, label: str, rng: str) -> PeriodDigest:
 
     d.contributor_total = len(by_author)
     d.top_contributors = sorted(by_author.items(),
-                                key=lambda kv: (-kv[1], kv[0]))[:TOP_N]
+                                key=lambda kv: (-kv[1], kv[0]))[:top_n]
     d.top_repos = sorted(by_repo.items(),
-                         key=lambda kv: (-kv[1], kv[0]))[:TOP_N]
+                         key=lambda kv: (-kv[1], kv[0]))[:top_n]
     return d
 
 

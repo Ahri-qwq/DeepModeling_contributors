@@ -544,3 +544,29 @@ class TestPeriodDigest:
         from contributors.notify.period import build_period, render_period
         payload = render_period(build_period([], "上周", "范围"))
         assert payload["msg_type"] == "interactive"
+
+
+class TestPeriodTopN:
+    """月报榜单比周报长：月度数据量大，前 5 名区分度不够。"""
+
+    def _mk(self, n, author):
+        return Event("commit", "r1", None, f"sha{n}", f"t{n}",
+                     f"https://x/{n}", author, "2026-08-05T10:00:00Z", None)
+
+    def test_weekly_lists_five(self):
+        from contributors.notify.period import build_period
+        evs = [self._mk(i, f"u{i:02d}") for i in range(20)]
+        d = build_period(evs, "上周", "范围", top_n=5)
+        assert len(d.top_contributors) == 5
+
+    def test_monthly_lists_ten(self):
+        from contributors.notify.period import build_period
+        evs = [self._mk(i, f"u{i:02d}") for i in range(20)]
+        d = build_period(evs, "上月", "范围", top_n=10)
+        assert len(d.top_contributors) == 10
+
+    def test_fewer_than_limit_is_fine(self):
+        from contributors.notify.period import build_period
+        evs = [self._mk(i, f"u{i:02d}") for i in range(3)]
+        d = build_period(evs, "上月", "范围", top_n=10)
+        assert len(d.top_contributors) == 3

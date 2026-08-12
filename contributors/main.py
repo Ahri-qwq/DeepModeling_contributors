@@ -551,7 +551,9 @@ def _notify_period(cfg) -> int:
     try:
         store.init_schema()
         events = store.events_between(start, end)
-        d = period.build_period(events, label, period.range_text(start, end))
+        top_n = (period.TOP_N_MONTHLY if monthly else period.TOP_N_WEEKLY)
+        d = period.build_period(events, label, period.range_text(start, end),
+                                top_n=top_n)
         print(f"{label}（{d.range_text}）：{len(events)} 条事件，"
               f"{d.contributor_total} 位贡献者")
 
