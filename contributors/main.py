@@ -634,6 +634,14 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 
         pending = store.pending_since_last_notify()
         totals = _year_totals(rows)
+
+        # 无增量时准备一句近期活动量。群里一天没消息，第一反应是脚本挂了，
+        # 所以宁可发一条"昨日无更新 + 本周至今 N 次提交"。
+        recent_label, recent_counts = "", {}
+        if not (pending.new_events or pending.state_changes):
+            recent_label, recent_counts = period.pick_recent(
+                store.events_between)
+
         d = digest.build(
             pending,
             last_notify_at=_last_notify_time(store),
@@ -645,6 +653,8 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             repos_processed=meta.get("repos_processed"),
             repos_total=meta.get("repos_in_scope"),
             failed_repos=sorted(meta.get("failures", {}).keys()),
+            recent_label=recent_label,
+            recent_counts=recent_counts,
         )
 
         if d.is_empty and not cfg.notify_empty:

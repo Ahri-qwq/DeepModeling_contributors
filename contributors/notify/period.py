@@ -73,6 +73,53 @@ def last_month_range(now: Optional[datetime] = None) -> tuple:
     return (_cst_midnight_utc(first_prev), _cst_midnight_utc(first_this))
 
 
+def this_week_range(now: Optional[datetime] = None) -> tuple:
+    """本周一零点到此刻（东八区），返回 UTC 半开区间。"""
+    ref = (now or datetime.now(timezone.utc)).astimezone(CST)
+    monday = ref.date() - timedelta(days=ref.weekday())
+    return (_cst_midnight_utc(datetime(monday.year, monday.month, monday.day)),
+            ref.astimezone(timezone.utc).isoformat())
+
+
+def this_month_range(now: Optional[datetime] = None) -> tuple:
+    """本月一号零点到此刻（东八区），返回 UTC 半开区间。"""
+    ref = (now or datetime.now(timezone.utc)).astimezone(CST)
+    return (_cst_midnight_utc(datetime(ref.year, ref.month, 1)),
+            ref.astimezone(timezone.utc).isoformat())
+
+
+def count_kinds(events: list) -> dict:
+    """按类型计数，供"无更新"时贴一句活动量用。只要数字，不要明细。"""
+    out = {"commits": 0, "merged": 0, "opened": 0, "issues": 0}
+    for ev in events:
+        if ev.kind == "commit":
+            out["commits"] += 1
+        elif ev.kind == "pr":
+            out["merged" if ev.state == "merged" else "opened"] += 1
+        elif ev.kind == "issue":
+            out["issues"] += 1
+    return {k: v for k, v in out.items() if v}
+
+
+def pick_recent(fetch, now: Optional[datetime] = None) -> tuple:
+    """逐级回退找一个非零区间：本周至今 → 上周 → 本月至今。
+
+    昨日无更新时，群里第一反应是"脚本挂了"。贴一个非零的近期活动量
+    既能排除故障怀疑，也说明系统在正常工作。三级都为零时返回空标签，
+    由调用方明说"近期无活动"——那本身也是有效信息。
+
+    fetch 是 (start, end) -> events 的可调用对象，实际传的是
+    store.events_between。纯本地 SQLite 查询，秒级返回，不发网络请求。
+    """
+    for label, rng in (("本周至今", this_week_range(now)),
+                       ("上周", last_week_range(now)),
+                       ("本月至今", this_month_range(now))):
+        events = fetch(*rng)
+        if events:
+            return label, count_kinds(events)
+    return "", {}
+
+
 def range_text(start_iso: str, end_iso: str) -> str:
     """把 UTC 区间转成东八区的可读范围，右端闭区间显示。
 

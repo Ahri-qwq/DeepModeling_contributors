@@ -151,7 +151,12 @@ class TestRenderText:
         assert "1 个 issue" in text
 
     def test_empty_digest_says_so(self):
-        assert "无新增" in card.render_text(build(UpsertResult([], [])))
+        """无增量时明说，而不是只留一个标题。
+
+        文案 2026-08-12 从"无新增"改为"昨日无更新"：日报不再因为空增量
+        就跳过不发，而是明说无更新并贴一句近期活动量，见 TestQuietDayFallback。
+        """
+        assert "昨日无更新" in card.render_text(build(UpsertResult([], [])))
 
     def test_empty_section_is_not_rendered(self):
         d = build(UpsertResult([_commit("a")], []))
@@ -607,3 +612,92 @@ class TestCommitFallback:
     def test_commit_line_links_to_commit(self):
         d = build(UpsertResult([_commit("abc123")], []))
         assert "commit/abc123" in card.render_text(d)
+
+
+class TestQuietDayFallback:
+    """昨日无更新时也要发，并贴一个非零区间的量。
+
+    不发的话，群里第一反应是"脚本挂了"。发一条明说"无更新"再带上近期
+    活动量，既排除了故障怀疑，也让人知道系统在正常工作。
+    """
+
+    def test_quiet_day_is_not_empty_when_fallback_given(self):
+        d = build(UpsertResult([], []),
+                  recent_label="本周至今", recent_counts={"commits": 12})
+        assert not d.is_empty, "有回退数据时不该被当成空战报跳过"
+
+    def test_states_no_update(self):
+        d = build(UpsertResult([], []),
+                  recent_label="本周至今", recent_counts={"commits": 12})
+        text = card.render_text(d)
+        assert "无更新" in text
+
+    def test_shows_recent_counts_only_as_numbers(self):
+        d = build(UpsertResult([], []), recent_label="本周至今",
+                  recent_counts={"commits": 12, "merged": 3, "issues": 1})
+        text = card.render_text(d)
+        assert "本周至今" in text
+        assert "12 次提交" in text
+        assert "3 个 PR 合并" in text
+
+    def test_no_recent_data_says_so(self):
+        """三级回退都为零时明说，那本身也是有效信息。"""
+        d = build(UpsertResult([], []), recent_label="", recent_counts={})
+        text = card.render_text(d)
+        assert "无更新" in text
+
+    def test_normal_day_unaffected(self):
+        """有增量时不该出现回退文案。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  recent_label="本周至今", recent_counts={"commits": 12})
+        text = card.render_text(d)
+        assert "无更新" not in text
+        assert "本周至今" not in text
+
+
+class TestRecentActivity:
+    """逐级回退找一个非零区间：本周至今 → 上周 → 本月至今。"""
+
+    def _counts(self, n):
+        return {"commits": n} if n else {}
+
+    def _fake(self, n=1):
+        return [Event("commit", "r", None, f"s{i}", "t", "u", None,
+                      "2026-08-10T00:00:00Z", None) for i in range(n)]
+
+    def test_prefers_this_week(self):
+        from contributors.notify.period import pick_recent
+        got = pick_recent(lambda s, e: self._fake(3),
+                          now=datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc))
+        assert got[0] == "本周至今"
+
+    def test_falls_back_to_last_week(self):
+        from contributors.notify.period import pick_recent
+        calls = []
+
+        def fetch(s, e):
+            calls.append((s, e))
+            return [] if len(calls) == 1 else self._fake(2)
+
+        got = pick_recent(fetch,
+                          now=datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc))
+        assert got[0] == "上周"
+
+    def test_falls_back_to_this_month(self):
+        from contributors.notify.period import pick_recent
+        calls = []
+
+        def fetch(s, e):
+            calls.append((s, e))
+            return self._fake(1) if len(calls) == 3 else []
+
+        got = pick_recent(fetch,
+                          now=datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc))
+        assert got[0] == "本月至今"
+
+    def test_all_empty_returns_blank_label(self):
+        from contributors.notify.period import pick_recent
+        got = pick_recent(lambda s, e: [],
+                          now=datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc))
+        assert got[0] == ""
+        assert got[1] == {}

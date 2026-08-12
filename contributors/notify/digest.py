@@ -52,11 +52,21 @@ class Digest:
     # 本次未能抓取的仓库。底部的"36/38 个仓库"只给数字，看不出少了谁 ——
     # 列出名字，读日报的人才能判断自己关心的仓库在不在里面。
     failed_repos: list = field(default_factory=list)
+    # 昨日无更新时贴的近期活动量。空标签表示三级回退都没找到数据。
+    # 只存数字不存明细 —— 这是"证明系统在正常工作"的旁证，不是内容。
+    recent_label: str = ""
+    recent_counts: dict = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
-        return (self.commit_count == 0 and not self.merged_prs
-                and not self.opened_prs and not self.issues)
+        """真正无内容可发。
+
+        有回退数据时不算空：那条"昨日无更新 + 本周至今 N 次提交"是要发的，
+        不发的话群里第一反应是脚本挂了。
+        """
+        no_increment = (self.commit_count == 0 and not self.merged_prs
+                        and not self.opened_prs and not self.issues)
+        return no_increment and not self.recent_counts
 
     @property
     def merged_count(self) -> int:
@@ -118,6 +128,8 @@ def build(pending, last_notify_at: str = "",
           repos_processed: Optional[int] = None,
           repos_total: Optional[int] = None,
           failed_repos: Optional[list] = None,
+          recent_label: str = "",
+          recent_counts: Optional[dict] = None,
           now: Optional[datetime] = None) -> Digest:
     """把 store 查出的待推送变化聚合成战报。
 
@@ -163,4 +175,6 @@ def build(pending, last_notify_at: str = "",
     d.repos_processed = repos_processed
     d.repos_total = repos_total
     d.failed_repos = list(failed_repos or [])
+    d.recent_label = recent_label
+    d.recent_counts = dict(recent_counts or {})
     return d

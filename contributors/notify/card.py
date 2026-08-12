@@ -133,8 +133,44 @@ def _failed_line(d: Digest) -> str:
             "（其增量将累计到明天的日报）")
 
 
+def _recent_line(d: Digest) -> str:
+    """昨日无更新时贴的近期活动量。只给数字，不列明细。
+
+    存在的理由：群里一天没消息，第一反应是"脚本挂了"。发一条明说无更新、
+    再带上近期活动量，既排除故障怀疑，也说明系统在正常工作。
+
+    注意口径不同源：日报按"本次运行新看到的"判定，而这个数字按事件真实
+    时间查库。可能出现"昨日无更新"但本周至今有 20 次提交 —— 那 20 次是
+    前几天看到的，两者不矛盾，故文案里明确写出区间名。
+    """
+    if not d.recent_counts:
+        return "近期无活动记录"
+    parts = []
+    for key, word in (("commits", "次提交"), ("merged", "个 PR 合并"),
+                      ("opened", "个 PR 新建"), ("issues", "个 issue")):
+        if d.recent_counts.get(key):
+            parts.append(f"{d.recent_counts[key]} {word}")
+    if not parts:
+        return "近期无活动记录"
+    return f"{d.recent_label}：{' · '.join(parts)}"
+
+
 def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     """卡片正文的 markdown。"""
+    no_increment = not (d.commit_count or d.merged_prs
+                        or d.opened_prs or d.issues)
+    if no_increment:
+        # 无更新也要发：不发的话群里第一反应是脚本挂了
+        lines = [_headline(d), "昨日无更新", "", _recent_line(d)]
+        totals = _totals_line(d)
+        if totals:
+            lines.append("")
+            lines.append(totals)
+        failed = _failed_line(d)
+        if failed:
+            lines.append(failed)
+        return "\n".join(lines)
+
     lines = [_headline(d), _summary_line(d)]
 
     for title, items in (("合并的 PR", d.merged_prs),
