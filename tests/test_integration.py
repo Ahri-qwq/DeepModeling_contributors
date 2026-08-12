@@ -73,7 +73,11 @@ def mk_cfg(tmp_path, **kw):
                 out_dir=str(tmp_path / "output"),
                 # 必须显式重定向：默认值是真实的 ./data/events.db，
                 # 漏传会让走完整 run() 的测试把 tiny 的假数据写进真实事件库
-                events_db=str(tmp_path / "events.db"))
+                events_db=str(tmp_path / "events.db"),
+                # 测试里绝不真等：失败仓库重试默认隔 60 秒，漏掉这项会让
+                # 任何触发失败路径的测试凭空多等一分钟（实测让整套从
+                # 5 分钟涨到 11 分半）。要测等待本身的用例显式传值。
+                repo_retry_wait=0)
     base.update(kw)
     return Config(**base)
 

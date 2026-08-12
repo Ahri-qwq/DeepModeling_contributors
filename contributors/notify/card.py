@@ -115,13 +115,19 @@ MAX_FAILED = 5
 
 
 def _failed_line(d: Digest) -> str:
-    """未能抓取的仓库。数据不全时必须让读日报的人看见。"""
+    """未能抓取的仓库。数据不全时必须让读日报的人看见。
+
+    "累计到明天"不是安慰话：增量按 first_seen_run > 上次成功推送的 run
+    判定，今天没抓到的仓库，明天抓到时那些事件才首次入库，自然会进
+    明天的日报，不会丢。
+    """
     if not d.failed_repos:
         return ""
     shown = [_escape(r) for r in d.failed_repos[:MAX_FAILED]]
     rest = len(d.failed_repos) - len(shown)
     tail = f"，还有 {rest} 个" if rest > 0 else ""
-    return f"未能抓取：{'、'.join(shown)}{tail}（数据可能不全）"
+    return (f"未能抓取：{'、'.join(shown)}{tail}"
+            "（其增量将累计到明天的日报）")
 
 
 def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:

@@ -443,3 +443,21 @@ class TestFailedRepos:
                   failed_repos=[f"repo{i}" for i in range(20)])
         text = card.render_text(d)
         assert "还有" in text
+
+
+class TestFailedReposCarryOver:
+    """失败仓库的文案要声明会累计到明天。
+
+    这句是真的：增量按 first_seen_run > 上次成功推送的 run 判定，
+    今天没抓到的仓库，明天抓到时那些事件才首次入库，自然进明天的日报。
+    """
+
+    def test_states_carry_over_to_tomorrow(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  failed_repos=["abacus-develop"])
+        text = card.render_text(d)
+        assert "明天" in text and "abacus-develop" in text
+
+    def test_no_carry_over_note_when_nothing_failed(self):
+        d = build(UpsertResult([_commit("a")], []), failed_repos=[])
+        assert "明天" not in card.render_text(d)

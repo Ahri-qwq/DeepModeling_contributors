@@ -35,11 +35,12 @@ from .store import EventStore
 _LINE_FIELDS = ("additions", "deletions", "files_changed",
                 "additions_raw", "deletions_raw")
 
-# 失败仓库单独重试的轮数。实测失败多是连接超时这类瞬时故障
+# 失败仓库单独重试的轮数与轮间隔。实测失败多是连接超时这类瞬时故障
 # （一天内撞到 RemoteDisconnected、SSLEOFError、connect timeout 三种），
-# 重跑一次通常就好。设 1 而非更多：真正挂掉的仓库重试再多也没用，
-# 而每轮都要重新 fetch，代价不小。
-DEFAULT_REPO_RETRIES = 1
+# 隔一分钟再试通常就好。只重跑失败的那几个，不重来整个流程 ——
+# 38 个仓库跑一次要 24 分钟。
+DEFAULT_REPO_RETRIES = 3
+REPO_RETRY_WAIT = 60
 
 
 def _new_bucket(login=None) -> dict:
@@ -417,12 +418,16 @@ def run(cfg, token: str) -> int:
     # 整体重试会让一个仓库的瞬时网络抖动拖着其余 37 个重新 fetch 一遍。
     # 失败原因多是连接超时这类瞬时故障，单独重跑几十秒就够。
     retries = getattr(cfg, "repo_retries", DEFAULT_REPO_RETRIES)
+    wait = getattr(cfg, "repo_retry_wait", REPO_RETRY_WAIT)
     for attempt in range(1, retries + 1):
         if not failures:
             break
         retry_names = list(failures.keys())
-        print(f"\n重试 {len(retry_names)} 个失败的仓库"
-              f"（第 {attempt}/{retries} 轮）：{'、'.join(retry_names)}")
+        if wait:
+            print(f"\n{len(retry_names)} 个仓库失败，{wait} 秒后重试"
+                  f"（第 {attempt}/{retries} 轮）")
+            time.sleep(wait)
+        print(f"重试：{'、'.join(retry_names)}")
         for repo in [r for r in kept if r.name in failures]:
             try:
                 r, b, ai, evs = process_repo(repo, cm, cfg, client, resolver)
