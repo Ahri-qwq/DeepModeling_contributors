@@ -104,6 +104,10 @@ python -m contributors --since 2026-01-01 --notify-dry-run
 | `--no-notify` | 关 | 跑统计与事件留存但不推送。拆分模式的抓取那步 |
 | `--only-notify` | 关 | 只算增量并推送，跳过采集管线（秒级）。拆分模式的推送那步 |
 | `--strict-repos` | 关 | 有仓库处理失败时以非零退出。定时跑时建议打开 |
+| `--repo-retries` | `3` | 失败仓库单独重试的轮数。只重跑失败的那几个 |
+| `--repo-retry-wait` | `60` | 失败仓库重试的轮间隔秒数 |
+| `--weekly` | 关 | 推送上周汇总（周一跑）。按事件真实时间统计，只读库 |
+| `--monthly` | 关 | 推送上月汇总（每月一号跑）。口径同 `--weekly` |
 
 > `--no-fetch` 完全跳过 GitHub API，PR/Issue/Review/Comment 各列全为 0，email→login 映射仅靠 noreply 邮箱正则解析。适用于改时间窗快速验证 commit 口径；出正式名单用完整跑法。
 
@@ -128,8 +132,10 @@ github_contributors/
 │   └── notify/             # 飞书推送
 │       ├── digest.py       # 库里的变化聚合成战报结构
 │       ├── card.py         # 战报渲染成卡片 JSON（纯函数）
+│       ├── period.py       # 周报月报：按事件真实时间聚合
 │       └── feishu.py       # 签名、POST、重试
-├── tests/                  # 412 个测试，与源码模块一一对应
+├── tests/                  # 432 个测试，与源码模块一一对应
+├── daily_report.bat        # 计划任务入口，封装全部模式
 ├── docs/                   # 快速开始与设计文档
 ├── .cache/                 # 运行时缓存（已忽略）
 ├── data/                   # 事件历史库（已忽略）
@@ -154,6 +160,7 @@ __main__ → main → ┬→ config
                   ├→ events   ─┐
                   ├→ store    ─┘
                   └→ notify/ → (digest → card → feishu)
+                               (period ──────↗)
 ```
 
 `models.py` 只放数据类，被多个模块共用，本身不 import 任何业务模块 —— 
@@ -379,16 +386,70 @@ PR 的合并是状态变更而非新增行，单独记录。上周创建、今�
 事件库是派生数据，不进 git。旧事件能重爬，但「第几次运行首次看到」这个信息重建不了，
 需要长期历史的话请自行备份。
 
+### 周报与月报
+
+除日报外还可推送区间汇总，内容是数字加活跃贡献者/仓库排行榜，不逐条列
+（一周几百条会刷屏，周月报的价值在趋势）：
+
+```
+py -3.12 -m contributors --weekly     # 上周一 ~ 上周日
+py -3.12 -m contributors --monthly    # 上月一号 ~ 月末
+```
+
+口径与日报**不同**且有意为之：日报按「本次新看到的」判定以保证不漏报，
+而周月报问的是「上周发生了什么」，那是时间概念，按事件真实时间统计。
+两者混用会让七天日报之和对不上周报。
+
+周月边界按东八区算再转 UTC 查库——直接拿 UTC 日界当周界，会把周一
+早八点前的事件算到上一周去。
+
+两者都只读事件库，秒级完成，不跑采集管线，也不影响日报的增量基线。
+
 ### 计划任务
 
-Windows 上用任务计划程序每天调一次：
+`daily_report.bat`（仓库根目录）封装了全部模式，日志写进
+`logs/daily-<日期>.log`：
+
+| 命令 | 作用 | 耗时 |
+|---|---|---|
+| `daily_report.bat --fetch` | 抓取并入库，不推送 | 约 25 分钟（38 个仓库） |
+| `daily_report.bat --push` | 只算增量并推送 | 数秒 |
+| `daily_report.bat --daily` | 抓取成功才推送 | 约 25 分钟 |
+| `daily_report.bat --weekly` | 推上周汇总 | 数秒 |
+| `daily_report.bat --monthly` | 推上月汇总 | 数秒 |
+| `daily_report.bat --dry` | 只渲染不发送 | 约 25 分钟 |
+
+四个计划任务：
 
 ```
-py -3.12 -m contributors --since 2026-01-01 --notify
+schtasks /create /tn "DM日报-抓取" /tr "C:\...\daily_report.bat --fetch"   /sc daily   /st 10:00
+schtasks /create /tn "DM日报-推送" /tr "C:\...\daily_report.bat --push"    /sc daily   /st 11:03
+schtasks /create /tn "DM周报"      /tr "C:\...\daily_report.bat --weekly"  /sc weekly  /d MON /st 11:15
+schtasks /create /tn "DM月报"      /tr "C:\...\daily_report.bat --monthly" /sc monthly /d 1   /st 11:30
 ```
 
-飞书对单个机器人限流 100 次/分钟、5 次/秒，官方文档建议避开 10:00、17:30 这类
-整点半点集中发送的时刻。每天一次远低于限额，但时间点仍建议错开整点。
+抓取与推送分成两个任务是因为抓取耗时不可控（受当天新提交量与网络影响，
+实测 24～28 分钟），而推送只读库、秒级完成，可以准点。两者之间留一小时
+余量。若不在乎准点，用 `--daily` 一个任务串联即可。
+
+必须以当前用户身份运行——token 来自 `gh` 的 keyring，换用户取不到。
+机器关机或休眠时任务不会跑，这是本机方案的固有限制。
+
+飞书对单个机器人限流 100 次/分钟、5 次/秒，官方文档建议避开 10:00、
+17:30 这类整点半点。故推送时刻取 11:03 而非 11:00；抓取那步不发消息，
+没有这个约束。
+
+### 仓库失败时
+
+失败的仓库会被单独重试 3 轮（间隔 60 秒），只重跑失败的那几个而不是
+重来整个流程——38 个仓库跑一次 25 分钟，整体重试代价太大。
+
+仍失败的仓库会写进卡片：「未能抓取：X（其增量将累计到明天的日报）」。
+这句是真的：增量按首次看到判定，今天没抓到的仓库明天抓到时那些事件
+才首次入库，自然进明天的日报，不丢也不重复。
+
+一个仓库连不上不会拦住整条日报——那会让其余 37 个仓库的动态一起发不
+出去。整次运行失败（拿不到仓库清单、断网）才会跳过推送。
 
 ## 统计口径
 
@@ -418,7 +479,7 @@ py -3.12 -m contributors --since 2026-01-01 --notify
 ## 开发
 
 ```bash
-python -m pytest -q          # 412 个测试，不联网
+python -m pytest -q          # 432 个测试，不联网
 ```
 
 Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。

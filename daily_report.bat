@@ -94,7 +94,9 @@ if /i "%ACTION%"=="--weekly" goto do_weekly
 if /i "%ACTION%"=="--monthly" goto do_monthly
 echo Unknown option: %ACTION%
 echo Use --fetch, --push, --daily, --dry, --weekly, or --monthly
-exit /b 2
+rem endlocal & needed: a bare "exit /b" inside setlocal does not
+rem propagate the code to the process exit status (verified).
+endlocal & exit /b 2
 
 rem ------------------------------------------------------------
 :do_fetch
