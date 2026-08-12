@@ -28,6 +28,8 @@ class Item:
 class Digest:
     """一次战报的全部内容。"""
     commit_count: int = 0
+    # commit 明细。平时不渲染，仅当没有任何 PR/issue 时兜底列出。
+    commits: list = field(default_factory=list)
     merged_prs: list = field(default_factory=list)
     opened_prs: list = field(default_factory=list)
     issues: list = field(default_factory=list)
@@ -137,6 +139,9 @@ def build(pending, last_notify_at: str = "",
     for ev in pending.new_events:
         if ev.kind == "commit":
             d.commit_count += 1
+            # 明细也留着：平时不展示（一天几十条会刷屏），但当天没有任何
+            # PR/issue 时，卡片就只剩一个数字，那时才拿出来列。
+            d.commits.append(_item(ev))
         elif ev.kind == "pr":
             if ev.state == "merged":
                 if ev.key not in merged_keys:

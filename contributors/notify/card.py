@@ -21,6 +21,9 @@ def _line(item, kind: str) -> str:
     title = _escape(item.title) or "(无标题)"
     who = f" @{_escape(item.author)}" if getattr(item, "author", "") else ""
     if item.number is None:
+        # commit 没有编号，但有 URL，链接挂在仓库名上仍可点开
+        if item.url:
+            return f"· [{item.repo}]({item.url}) {title}{who}"
         return f"· {item.repo} {title}{who}"
     return f"· [{item.repo} #{item.number}]({item.url}) {title}{who}"
 
@@ -138,6 +141,15 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
                          ("新建的 PR", d.opened_prs),
                          ("新增 issue", d.issues)):
         sec = _section(title, items, limit)
+        if sec:
+            lines.append("")
+            lines.extend(sec)
+
+    # 兜底：当天没有任何 PR/issue 时，卡片就只剩一个提交数字，什么信息
+    # 都没有（2026-08-12 实际推出过这样一条）。此时把 commit 列出来。
+    # 平时不列是因为一天几十条会刷屏，那个取舍在有 PR/issue 时仍然成立。
+    if d.commits and not (d.merged_prs or d.opened_prs or d.issues):
+        sec = _section("提交", d.commits, limit)
         if sec:
             lines.append("")
             lines.extend(sec)

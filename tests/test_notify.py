@@ -570,3 +570,40 @@ class TestPeriodTopN:
         evs = [self._mk(i, f"u{i:02d}") for i in range(3)]
         d = build_period(evs, "上月", "范围", top_n=10)
         assert len(d.top_contributors) == 3
+
+
+class TestCommitFallback:
+    """整张卡片只有 commit 时才列出它们。
+
+    平时 commit 只计数不列（一天几十条会刷屏），但当天没有任何 PR/issue
+    时，卡片就只剩一个孤零零的数字，什么信息都没有 —— 2026-08-12 实际
+    推出过这样一条："4 次提交" 加底部累计，仅此而已。
+    """
+
+    def test_commits_listed_when_no_pr_or_issue(self):
+        d = build(UpsertResult([_commit("aaa1"), _commit("bbb2")], []))
+        text = card.render_text(d)
+        assert "修复" in text          # commit 标题
+        assert "2 次提交" in text      # 数字仍在
+
+    def test_commits_not_listed_when_pr_present(self):
+        """有 PR 时保持原样，只计数不列 —— 否则忙时会刷屏。"""
+        d = build(UpsertResult([_commit("aaa1"), _pr(1, "open")], []))
+        text = card.render_text(d)
+        assert "1 次提交" in text
+        assert "修复" not in text
+
+    def test_commit_line_has_no_author(self):
+        """commit 事件没有 author_login（EVENT_LOG_FORMAT 不取作者）。"""
+        d = build(UpsertResult([_commit("aaa1")], []))
+        assert "@" not in card.render_text(d)
+
+    def test_commit_list_is_truncated(self):
+        """即使只有 commit，也不能无限列。"""
+        d = build(UpsertResult([_commit(f"s{i}") for i in range(25)], []))
+        text = card.render_text(d)
+        assert "还有 15 条" in text
+
+    def test_commit_line_links_to_commit(self):
+        d = build(UpsertResult([_commit("abc123")], []))
+        assert "commit/abc123" in card.render_text(d)

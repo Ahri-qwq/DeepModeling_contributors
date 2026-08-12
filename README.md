@@ -134,7 +134,7 @@ github_contributors/
 │       ├── card.py         # 战报渲染成卡片 JSON（纯函数）
 │       ├── period.py       # 周报月报：按事件真实时间聚合
 │       └── feishu.py       # 签名、POST、重试
-├── tests/                  # 435 个测试，与源码模块一一对应
+├── tests/                  # 440 个测试，与源码模块一一对应
 ├── daily_report.bat        # 计划任务入口，封装全部模式
 ├── docs/                   # 快速开始与设计文档
 ├── .cache/                 # 运行时缓存（已忽略）
@@ -377,6 +377,10 @@ URL 来自飞书群「设置 → 群机器人 → 添加机器人 → 自定义�
 PR 的合并是状态变更而非新增行，单独记录。上周创建、今天合并的 PR 照样会出现在今天的
 战报里 —— 只看新增行的话会漏掉它，而合并恰恰是最值得说的事件。
 
+commit 平时只计数不逐条列（一天几十条会刷屏），但当天没有任何 PR/issue 时会兜底
+列出——否则整张卡片只剩一个数字，什么信息都没有。commit 行不带作者：
+`EVENT_LOG_FORMAT` 只取 SHA、日期、标题三个字段。
+
 ### 行为要点
 
 首次运行会把窗口内几千条事件全判为新增，此时只建库不推送，从第二次运行起才有意义。
@@ -479,7 +483,7 @@ schtasks /create /tn "DM月报"      /tr "C:\...\daily_report.bat --monthly" /sc
 ## 开发
 
 ```bash
-python -m pytest -q          # 435 个测试，不联网
+python -m pytest -q          # 440 个测试，不联网
 ```
 
 Windows 上终端中文乱码时加 `PYTHONIOENCODING=utf-8` 前缀，文件内容不受影响。
