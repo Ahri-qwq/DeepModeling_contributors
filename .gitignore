@@ -12,6 +12,8 @@ __pycache__/
 .pytest_cache/
 # 每日任务日志：会持续累积，且内容可从事件库与输出目录复原
 logs/
+# gh CLI 在工作目录下写的设备标识，属本机状态
+.local/
 # 本机权限白名单与 worktree 状态，对他人无意义
 .claude/settings.local.json
 .claude/worktrees/

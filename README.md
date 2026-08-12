@@ -1,8 +1,24 @@
 # GitHub 组织贡献者统计
 
-整合 git commit 历史与 GitHub API（PR/Issue/Review/Comment），输出可用于感谢与表彰的贡献者名单。
+整合 git commit 历史与 GitHub API（PR/Issue/Review/Comment），输出可用于感谢与表彰的贡献者名单，
+并每天把社区动态推送到飞书群。
 
-第一次在新机器上运行，请看 [`docs/新设备快速开始.md`](docs/新设备快速开始.md)。
+> ## 只想调用它？看 [`docs/快速开始.md`](docs/快速开始.md)
+>
+> 那份文档是给**外部工具与 Agent** 用的调用手册：命令、参数、退出码、常见坑，
+> 不讲实现原理。四条最常用的命令（在项目根目录执行，bat 用绝对路径）：
+>
+> ```bat
+> daily_report.bat --dry      先看会发什么，不发送、无副作用
+> daily_report.bat --fetch    抓取数据，约 25 分钟，不发送
+> daily_report.bat --push     推送日报，数秒
+> daily_report.bat --weekly   推送上周汇总，数秒
+> ```
+>
+> 退出码 `0` 成功、`1` 抓取失败、`2` 参数错误。日志在 `logs\daily-<日期>.log`。
+> **第一次调用请用 `--dry`**，它不会产生任何外部副作用。
+
+第一次在新机器上配置环境，请看 [`docs/第一期工程/新设备快速开始.md`](docs/第一期工程/新设备快速开始.md)。
 
 > **提交数有两个口径，分别成列。** `commits` 只数合并进主干的提交；
 > `commits_loose` 额外计入 PR 分支上的原始提交。用 squash 合并时同一份工作
