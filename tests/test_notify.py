@@ -418,3 +418,28 @@ class TestDailyHeadline:
         """从没成功推送过时不能称"昨日"。"""
         d = build(UpsertResult([_commit("a")], []), last_notify_at="")
         assert "昨日社区动态" not in card.render_text(d)
+
+
+class TestFailedRepos:
+    """有仓库抓取失败时在卡片里如实标出。
+
+    底部已有"36/38 个仓库"的范围标注，但只看数字不知道少了谁。
+    列出名字，看日报的人才能判断自己关心的仓库在不在里面。
+    """
+
+    def test_failed_repos_are_listed(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  failed_repos=["abacus-develop", "community"])
+        text = card.render_text(d)
+        assert "abacus-develop" in text and "community" in text
+
+    def test_no_line_when_nothing_failed(self):
+        d = build(UpsertResult([_commit("a")], []), failed_repos=[])
+        assert "未能抓取" not in card.render_text(d)
+
+    def test_many_failures_are_truncated(self):
+        """失败很多时不该刷屏。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  failed_repos=[f"repo{i}" for i in range(20)])
+        text = card.render_text(d)
+        assert "还有" in text

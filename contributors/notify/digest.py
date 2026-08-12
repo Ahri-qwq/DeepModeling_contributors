@@ -47,6 +47,9 @@ class Digest:
     # 用它决定文案：约一天内写"昨日社区动态"，超出则回退到
     # "自上次汇报（X）以来" —— 推送失败补推时卡片里装的是两天的内容。
     hours_since_notify: Optional[float] = None
+    # 本次未能抓取的仓库。底部的"36/38 个仓库"只给数字，看不出少了谁 ——
+    # 列出名字，读日报的人才能判断自己关心的仓库在不在里面。
+    failed_repos: list = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -112,6 +115,7 @@ def build(pending, last_notify_at: str = "",
           total_issues: Optional[int] = None,
           repos_processed: Optional[int] = None,
           repos_total: Optional[int] = None,
+          failed_repos: Optional[list] = None,
           now: Optional[datetime] = None) -> Digest:
     """把 store 查出的待推送变化聚合成战报。
 
@@ -153,4 +157,5 @@ def build(pending, last_notify_at: str = "",
     d.total_issues = total_issues
     d.repos_processed = repos_processed
     d.repos_total = repos_total
+    d.failed_repos = list(failed_repos or [])
     return d

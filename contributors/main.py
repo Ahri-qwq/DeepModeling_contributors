@@ -35,6 +35,12 @@ from .store import EventStore
 _LINE_FIELDS = ("additions", "deletions", "files_changed",
                 "additions_raw", "deletions_raw")
 
+# 失败仓库单独重试的轮数。实测失败多是连接超时这类瞬时故障
+# （一天内撞到 RemoteDisconnected、SSLEOFError、connect timeout 三种），
+# 重跑一次通常就好。设 1 而非更多：真正挂掉的仓库重试再多也没用，
+# 而每轮都要重新 fetch，代价不小。
+DEFAULT_REPO_RETRIES = 1
+
 
 def _new_bucket(login=None) -> dict:
     return {"login": login, "names": set(), "emails": set(),
@@ -407,6 +413,29 @@ def run(cfg, token: str) -> int:
             failures[repo.name] = str(exc)[:500]
             print(f"  失败：{exc}")
 
+    # 只重跑失败的那几个，而不是整个流程。38 个仓库跑一次 24 分钟，
+    # 整体重试会让一个仓库的瞬时网络抖动拖着其余 37 个重新 fetch 一遍。
+    # 失败原因多是连接超时这类瞬时故障，单独重跑几十秒就够。
+    retries = getattr(cfg, "repo_retries", DEFAULT_REPO_RETRIES)
+    for attempt in range(1, retries + 1):
+        if not failures:
+            break
+        retry_names = list(failures.keys())
+        print(f"\n重试 {len(retry_names)} 个失败的仓库"
+              f"（第 {attempt}/{retries} 轮）：{'、'.join(retry_names)}")
+        for repo in [r for r in kept if r.name in failures]:
+            try:
+                r, b, ai, evs = process_repo(repo, cm, cfg, client, resolver)
+                rows.extend(merge_by_name(r))
+                bots.extend(b)
+                ai_records.append(ai)
+                all_events.extend(evs)
+                del failures[repo.name]
+                print(f"  {repo.name} 重试成功")
+            except (GitError, RateLimitError, RuntimeError, OSError) as exc:
+                failures[repo.name] = str(exc)[:500]
+                print(f"  {repo.name} 仍失败：{exc}")
+
     _write_outputs(rows, bots, ai_records, resolver, cfg, out)
     meta = _write_meta(all_repos, kept, skipped, failures, rows, bots,
                        ai_records, resolver, client, cfg, out, started)
@@ -563,6 +592,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             total_issues=totals["issue_created"],
             repos_processed=meta.get("repos_processed"),
             repos_total=meta.get("repos_in_scope"),
+            failed_repos=sorted(meta.get("failures", {}).keys()),
         )
 
         if d.is_empty and not cfg.notify_empty:

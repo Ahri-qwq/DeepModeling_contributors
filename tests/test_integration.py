@@ -832,3 +832,69 @@ def test_strict_repos_returns_zero_when_all_succeed(tiny_repo, monkeypatch):
     cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, strict_repos=True)
     m = _patch_network(monkeypatch, [mk_repo()], cfg)
     assert m.run(cfg, token="fake") == 0
+
+
+# --- 失败仓库单独重试 ---
+#
+# 38 个仓库跑一次 24 分钟。整体重试意味着一个仓库的瞬时网络抖动就让
+# 其余 37 个重新 fetch 一遍，三次重试近两小时。只重跑失败的那几个，
+# 几十秒就够。
+
+def test_failed_repos_are_retried_individually(tiny_repo, monkeypatch):
+    """第一趟失败的仓库，第二趟只重跑它自己。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, repo_retries=1)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+
+    calls = []
+    real = m.process_repo
+
+    def flaky(repo, cm, cfg_, client, resolver):
+        calls.append(repo.name)
+        if len(calls) == 1:
+            raise RuntimeError("瞬时网络抖动")
+        return real(repo, cm, cfg_, client, resolver)
+
+    monkeypatch.setattr(m, "process_repo", flaky)
+    code = m.run(cfg, token="fake")
+
+    assert code == 0, "重试成功后不该以失败退出"
+    assert calls == ["tiny", "tiny"], "应恰好重试一次"
+    assert (Path(cfg.out_dir) / "by_repo.csv").is_file()
+
+
+def test_repo_retry_gives_up_and_records_failure(tiny_repo, monkeypatch):
+    """重试用尽仍失败时记入 failures，不无限重试。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, repo_retries=2)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+
+    calls = []
+
+    def always_fail(repo, cm, cfg_, client, resolver):
+        calls.append(repo.name)
+        raise RuntimeError("一直失败")
+
+    monkeypatch.setattr(m, "process_repo", always_fail)
+    m.run(cfg, token="fake")
+
+    # 首次 + 2 次重试 = 3 次
+    assert len(calls) == 3
+    import json as _json
+    meta = _json.loads(
+        (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
+    assert "tiny" in meta["failures"]
+
+
+def test_no_retry_when_all_succeed(tiny_repo, monkeypatch):
+    """全部成功时不应有多余的重试调用。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, repo_retries=2)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    calls = []
+    real = m.process_repo
+
+    def counted(repo, *a):
+        calls.append(repo.name)
+        return real(repo, *a)
+
+    monkeypatch.setattr(m, "process_repo", counted)
+    m.run(cfg, token="fake")
+    assert calls == ["tiny"]

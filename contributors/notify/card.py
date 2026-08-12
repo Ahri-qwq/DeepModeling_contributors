@@ -110,6 +110,20 @@ def _headline(d: Digest) -> str:
     return "自上次汇报以来："
 
 
+# 失败仓库最多列几个。全挂时不该让告警本身刷屏。
+MAX_FAILED = 5
+
+
+def _failed_line(d: Digest) -> str:
+    """未能抓取的仓库。数据不全时必须让读日报的人看见。"""
+    if not d.failed_repos:
+        return ""
+    shown = [_escape(r) for r in d.failed_repos[:MAX_FAILED]]
+    rest = len(d.failed_repos) - len(shown)
+    tail = f"，还有 {rest} 个" if rest > 0 else ""
+    return f"未能抓取：{'、'.join(shown)}{tail}（数据可能不全）"
+
+
 def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     """卡片正文的 markdown。"""
     lines = [_headline(d), _summary_line(d)]
@@ -126,6 +140,10 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     if totals:
         lines.append("")
         lines.append(totals)
+
+    failed = _failed_line(d)
+    if failed:
+        lines.append(failed)
 
     return "\n".join(lines)
 

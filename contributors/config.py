@@ -119,6 +119,8 @@ class Config:
     # 整体）。每天定时跑时打开，让计划任务据此跳过推送——否则数据不完整
     # 却照常推送，卡片底部写"1/2 个仓库"而没有任何警示。
     strict_repos: bool = False
+    # 失败仓库单独重试的轮数。只重跑失败的那几个，不重来整个流程。
+    repo_retries: int = 1
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -190,6 +192,9 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     p.add_argument("--only-notify", action="store_true",
                    help="只计算增量并推送，跳过采集管线（秒级完成）。"
                         "用于拆分模式的推送那一步，须先跑过 --no-notify")
+    p.add_argument("--repo-retries", type=int, default=1,
+                   help="失败仓库单独重试的轮数（默认 1）。只重跑失败的那几个，"
+                        "不重来整个流程——38 个仓库跑一次要 24 分钟")
     p.add_argument("--strict-repos", action="store_true",
                    help="有仓库处理失败时以非零退出。每天定时跑时建议打开，"
                         "让计划任务据此跳过推送，避免推出不完整的数据")
@@ -228,4 +233,5 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         no_notify=a.no_notify,
         only_notify=a.only_notify,
         strict_repos=a.strict_repos,
+        repo_retries=a.repo_retries,
     )
