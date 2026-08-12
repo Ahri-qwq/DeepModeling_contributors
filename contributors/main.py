@@ -432,6 +432,13 @@ def run(cfg, token: str) -> int:
         except Exception as exc:                       # noqa: BLE001
             print(f"注意：事件留存或推送失败（{exc}），统计结果不受影响")
 
+    # --strict-repos：有仓库失败就非零退出，供计划任务据此跳过推送。
+    # 默认仍返回 0，保持第一期"单仓库失败不中断整体"的原则不变。
+    if failures and getattr(cfg, "strict_repos", False):
+        print(f"注意：--strict-repos 已开启，{len(failures)} 个仓库失败，"
+              "以非零退出。数据不完整，不应据此推送")
+        return 1
+
     return 0
 
 

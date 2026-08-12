@@ -115,6 +115,10 @@ class Config:
     # only_notify 只算增量并推送，跳过采集管线（推送那步）
     no_notify: bool = False
     only_notify: bool = False
+    # 有仓库处理失败时以非零退出。默认关闭（第一期原则：单仓库失败不中断
+    # 整体）。每天定时跑时打开，让计划任务据此跳过推送——否则数据不完整
+    # 却照常推送，卡片底部写"1/2 个仓库"而没有任何警示。
+    strict_repos: bool = False
 
 
 def parse_args(argv: list, today: Optional[date] = None) -> Config:
@@ -186,6 +190,9 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
     p.add_argument("--only-notify", action="store_true",
                    help="只计算增量并推送，跳过采集管线（秒级完成）。"
                         "用于拆分模式的推送那一步，须先跑过 --no-notify")
+    p.add_argument("--strict-repos", action="store_true",
+                   help="有仓库处理失败时以非零退出。每天定时跑时建议打开，"
+                        "让计划任务据此跳过推送，避免推出不完整的数据")
 
     a = p.parse_args(argv)
     since_dt, until_dt = resolve_window(a.since, a.until, a.months, today)
@@ -220,4 +227,5 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
         resend_last=a.resend_last,
         no_notify=a.no_notify,
         only_notify=a.only_notify,
+        strict_repos=a.strict_repos,
     )

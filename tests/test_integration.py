@@ -799,3 +799,36 @@ def test_only_notify_pushes_without_running_pipeline(tiny_repo, monkeypatch):
     assert len(sent) == 1, "应推送一条"
     body = sent[0]["card"]["elements"][0]["text"]["content"]
     assert "#42" in body, "新增的 PR 必须出现在战报里"
+
+
+# --- 仓库失败时的退出码 ---
+#
+# 单仓库失败默认只记 failures 并继续（第一期原则：不因一个仓库中断整体）。
+# 但每天定时跑时这会变成隐患：抓取部分失败仍返回 0，脚本以为成功照常推送，
+# 卡片底部写"1/2 个仓库"却没有任何警示。实测撞到过 SSLEOFError。
+# --strict-repos 让调用方选择"有失败就非零退出"。
+
+def test_repo_failure_keeps_exit_zero_by_default(tiny_repo, monkeypatch):
+    """默认行为不变：单仓库失败不影响退出码。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    monkeypatch.setattr(m, "process_repo",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("boom")))
+    assert m.run(cfg, token="fake") == 0
+
+
+def test_strict_repos_returns_nonzero_on_failure(tiny_repo, monkeypatch):
+    """--strict-repos：有仓库失败就非零退出，供计划任务据此跳过推送。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, strict_repos=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    monkeypatch.setattr(m, "process_repo",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("boom")))
+    assert m.run(cfg, token="fake") != 0
+
+
+def test_strict_repos_returns_zero_when_all_succeed(tiny_repo, monkeypatch):
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, strict_repos=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    assert m.run(cfg, token="fake") == 0

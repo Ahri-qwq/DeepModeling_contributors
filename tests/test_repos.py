@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import pytest
+import requests
 from contributors.models import RepoInfo
 from contributors.config import Config
 from contributors.repos import classify_upstream, should_skip, filter_repos
@@ -418,3 +419,70 @@ def test_fetch_repos_max_pages_limit(capsys):
         assert str(MAX_PAGES) in captured.err
 
     run()
+
+
+# --- 网络瞬时故障重试 ---
+#
+# 实测踩到过：fetch_repos 里查 fork 上游的那个 requests.get 是裸调用，
+# 没有任何重试，一次 RemoteDisconnected 就让整次运行退出码 1。
+# GraphQL 客户端有 5 次退避重试，这里却没有，是明显的短板。
+
+def test_fetch_repos_retries_transient_network_error():
+    """连接被掐断时应重试而非直接失败。"""
+    import responses
+    from contributors.repos import fetch_repos
+
+    @responses.activate
+    def run():
+        url = "https://api.github.com/orgs/deepmodeling/repos"
+        # 第一次连接错误，第二次成功
+        responses.add(responses.GET, url,
+                      body=requests.exceptions.ConnectionError("Connection aborted."))
+        responses.add(responses.GET, url, json=[{
+            "name": "dpdata", "default_branch": "main", "size": 2048,
+            "pushed_at": "2026-07-01T10:00:00Z", "fork": False,
+            "archived": False,
+        }], status=200)
+        responses.add(responses.GET, url, json=[], status=200)
+        return fetch_repos("deepmodeling", "tok", sleeper=lambda s: None)
+
+    repos = run()
+    assert [r.name for r in repos] == ["dpdata"]
+
+
+def test_fetch_repos_retries_server_error():
+    """502/503 是服务端瞬时故障，值得重试。"""
+    import responses
+    from contributors.repos import fetch_repos
+
+    @responses.activate
+    def run():
+        url = "https://api.github.com/orgs/deepmodeling/repos"
+        responses.add(responses.GET, url, status=502)
+        responses.add(responses.GET, url, json=[{
+            "name": "dpdata", "default_branch": "main", "size": 2048,
+            "pushed_at": "2026-07-01T10:00:00Z", "fork": False,
+            "archived": False,
+        }], status=200)
+        responses.add(responses.GET, url, json=[], status=200)
+        return fetch_repos("deepmodeling", "tok", sleeper=lambda s: None)
+
+    assert [r.name for r in run()] == ["dpdata"]
+
+
+def test_fetch_repos_gives_up_after_max_retries():
+    """一直失败时要抛出可读的错误，而不是无限重试。"""
+    import responses
+    from contributors.repos import fetch_repos, RepoFetchError
+
+    @responses.activate
+    def run():
+        url = "https://api.github.com/orgs/deepmodeling/repos"
+        for _ in range(10):
+            responses.add(responses.GET, url,
+                          body=requests.exceptions.ConnectionError("Connection aborted."))
+        return fetch_repos("deepmodeling", "tok", max_retries=2,
+                           sleeper=lambda s: None)
+
+    with pytest.raises(RepoFetchError, match="重试"):
+        run()
