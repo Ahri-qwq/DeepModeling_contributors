@@ -86,9 +86,16 @@ def _totals_line(d: Digest) -> str:
         return ""
 
     scope = ""
-    if (d.repos_processed is not None and d.repos_total
-            and d.repos_processed < d.repos_total):
-        scope = f"（{d.repos_processed}/{d.repos_total} 个仓库）"
+    # 只在"本来就只跑了子集"时标注范围。抓取失败造成的缺口不算 ——
+    # 底部这几个数字读的是全年累计的 CSV，失败仓库今年前面几百天的数据
+    # 一条不少，缺的只是今天那一天。写成"36/38 个仓库"会让人以为这份
+    # 年度统计整个不含那两个仓库，那是把一天的缺口说成了全年的。
+    # 失败自有"未能抓取"那行去讲，那里才说得清缺的是哪一天。
+    scanned = d.repos_processed
+    if scanned is not None:
+        scanned += len(d.failed_repos) + len(d.chronic_failures)
+    if (scanned is not None and d.repos_total and scanned < d.repos_total):
+        scope = f"（{scanned}/{d.repos_total} 个仓库）"
     return f"今年至今{scope}：{' · '.join(tail)}"
 
 
@@ -226,13 +233,27 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     return "\n".join(lines)
 
 
+def _title(d: Digest) -> str:
+    """卡片标题。有仓库没抓到时在标题里点一句。
+
+    正文已经有"未能抓取"那行，标题再说一次是因为：群里很多人只扫标题，
+    正文折叠着不点开。标题只说"部分仓库数据缺失"这个事实，不列名字 ——
+    缺哪几个、会怎么补，正文讲得清楚，标题挤不下也不该挤。
+    """
+    base = f"DeepModeling 社区日报 {d.generated_at}"
+    if d.failed_repos or d.chronic_failures:
+        n = len(d.failed_repos) + len(d.chronic_failures)
+        return f"{base}（{n} 个仓库今日数据缺失）"
+    return base
+
+
 def _build(d: Digest, limit: int) -> dict:
     return {
         "msg_type": "interactive",
         "card": {
             "header": {
                 "title": {"tag": "plain_text",
-                          "content": f"DeepModeling 社区日报 {d.generated_at}"},
+                          "content": _title(d)},
                 "template": "blue",
             },
             "elements": [

@@ -742,3 +742,61 @@ class TestChronicFailures:
         d = build(UpsertResult([_commit("a")], []),
                   chronic_failures={f"repo{i}": 3 for i in range(20)})
         assert "还有" in card.render_text(d)
+
+
+class TestScopeVsFailure:
+    """"只跑了子集"与"抓取失败"是两回事，底部标注只该管前者。
+
+    底部那几个数字读的是全年累计的 CSV：失败仓库今年前面几百天的数据
+    一条不少，缺的只是今天那一天。写成"36/38 个仓库"会让人以为这份
+    年度统计整个不含那两个仓库 —— 把一天的缺口说成了全年的。
+    """
+
+    def test_failure_does_not_shrink_scope(self):
+        d = build(UpsertResult([_commit("a")], []), total_commits=4768,
+                  repos_processed=36, repos_total=38,
+                  failed_repos=["abacus-develop", "deepmd-kit"])
+        text = card.render_text(d)
+        assert "今年至今：" in text, "失败不该让底部标注范围"
+        assert "36/38" not in text
+
+    def test_chronic_failure_also_does_not_shrink_scope(self):
+        d = build(UpsertResult([_commit("a")], []), total_commits=4768,
+                  repos_processed=37, repos_total=38,
+                  chronic_failures={"abacus-develop": 3})
+        assert "今年至今：" in card.render_text(d)
+
+    def test_subset_run_still_labeled(self):
+        """真的只跑了子集时，标注照旧 —— 那正是它存在的理由。"""
+        d = build(UpsertResult([], []), total_contributors=20,
+                  total_commits=17, repos_processed=1, repos_total=34)
+        assert "今年至今（1/34 个仓库）" in card.render_text(d)
+
+    def test_subset_with_failure_counts_both(self):
+        """既跑子集又有失败：标注按"本来要跑几个"算，不把失败算进缺口。"""
+        d = build(UpsertResult([], []), total_commits=17,
+                  repos_processed=9, repos_total=34,
+                  failed_repos=["x"])
+        assert "今年至今（10/34 个仓库）" in card.render_text(d)
+
+
+class TestTitleAnnouncesFailure:
+    """标题要点一句数据缺失 —— 群里很多人只扫标题，不点开正文。"""
+
+    def test_title_mentions_missing_repos(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  failed_repos=["abacus-develop", "deepmd-kit"])
+        title = card.render(d)["card"]["header"]["title"]["content"]
+        assert "2 个仓库今日数据缺失" in title
+
+    def test_title_counts_chronic_too(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  failed_repos=["deepmd-kit"],
+                  chronic_failures={"abacus-develop": 3})
+        title = card.render(d)["card"]["header"]["title"]["content"]
+        assert "2 个仓库今日数据缺失" in title
+
+    def test_clean_run_title_unchanged(self):
+        d = build(UpsertResult([_commit("a")], []), failed_repos=[])
+        title = card.render(d)["card"]["header"]["title"]["content"]
+        assert "缺失" not in title and "DeepModeling 社区日报" in title
