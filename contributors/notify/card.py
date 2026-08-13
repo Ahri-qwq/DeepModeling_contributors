@@ -133,6 +133,23 @@ def _failed_line(d: Digest) -> str:
             "（其增量将累计到明天的日报）")
 
 
+def _chronic_line(d: Digest) -> str:
+    """连续多次抓取失败的仓库。与上面那行分开，因为这条要人去处理。
+
+    "累计到明天"对这些仓库不再成立：连挂三次说明多半不是网络抖动，
+    而是改名、删除或权限变更 —— 那种情况永远不会自愈，没人去看就一直挂着。
+    """
+    if not d.chronic_failures:
+        return ""
+    items = sorted(d.chronic_failures.items(),
+                   key=lambda kv: (-kv[1], kv[0]))[:MAX_FAILED]
+    rest = len(d.chronic_failures) - len(items)
+    tail = f"，还有 {rest} 个" if rest > 0 else ""
+    body = "、".join(f"{_escape(n)}（{c} 次）" for n, c in items)
+    return (f"⚠️ 连续抓取失败：{body}{tail}"
+            "，可能是改名、删除或权限变更，请检查")
+
+
 def _recent_line(d: Digest) -> str:
     """昨日无更新时贴的近期活动量。只给数字，不列明细。
 
@@ -169,6 +186,9 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
         failed = _failed_line(d)
         if failed:
             lines.append(failed)
+        chronic = _chronic_line(d)
+        if chronic:
+            lines.append(chronic)
         return "\n".join(lines)
 
     lines = [_headline(d), _summary_line(d)]
@@ -198,6 +218,10 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     failed = _failed_line(d)
     if failed:
         lines.append(failed)
+
+    chronic = _chronic_line(d)
+    if chronic:
+        lines.append(chronic)
 
     return "\n".join(lines)
 

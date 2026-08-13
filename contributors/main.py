@@ -35,12 +35,18 @@ from .store import EventStore
 _LINE_FIELDS = ("additions", "deletions", "files_changed",
                 "additions_raw", "deletions_raw")
 
-# 失败仓库单独重试的轮数与轮间隔。实测失败多是连接超时这类瞬时故障
-# （一天内撞到 RemoteDisconnected、SSLEOFError、connect timeout 三种），
-# 隔一分钟再试通常就好。只重跑失败的那几个，不重来整个流程 ——
-# 38 个仓库跑一次要 24 分钟。
+# 失败仓库的重试预算。实测失败多是连接超时这类瞬时故障（一天内撞到
+# RemoteDisconnected、SSLEOFError、connect timeout 三种），立刻重试一次
+# 通常就好，不必等 —— 以前的固定轮间等待会让一个仓库的抖动拖着其余 37 个干等。
+# 每轮内每个仓库试两次（失败即刻再来一次），共 3 轮，故最多 6 次。
 DEFAULT_REPO_RETRIES = 3
-REPO_RETRY_WAIT = 60
+ATTEMPTS_PER_ROUND = 2
+# 只剩一个仓库待重试时的最小间隔秒数。此时没有别的仓库可以插空，
+# 连着打同一个域名既无益也不礼貌。
+LAST_REPO_RETRY_WAIT = 30
+# 连续失败几次就在日报里升级为告警。定 3 而非 2：连着两个倒霉的夜晚
+# 并不罕见，3 次基本可以排除网络抖动，指向改名、删除或权限变更。
+CHRONIC_FAILURE_THRESHOLD = 3
 
 
 def _new_bucket(login=None) -> dict:
@@ -406,44 +412,63 @@ def run(cfg, token: str) -> int:
     rows, bots, failures, ai_records = [], [], {}, []
     all_events = []
 
+    def _collect(r, b, ai, evs) -> None:
+        rows.extend(merge_by_name(r))
+        bots.extend(b)
+        ai_records.append(ai)
+        all_events.extend(evs)
+
+    def _try_repo(repo, alone: bool, sleeper=time.sleep) -> bool:
+        """跑一个仓库，失败就地重试一次。成功返回 True。
+
+        为什么就地重试而不是排队等下一轮：失败多是瞬时连接故障，隔几秒
+        再试往往就成了；而排队意味着这个仓库要等其余 37 个跑完才有第二次
+        机会，白白拖长整体。
+
+        限流是唯一的例外。撞上 RateLimitError 时立刻再打一次只会加深
+        限流，所以它不就地重试，直接留到下一轮 —— 下一轮之前天然隔着
+        几十个仓库的时间，比任何 sleep 都管用。
+        """
+        for attempt in range(1, ATTEMPTS_PER_ROUND + 1):
+            try:
+                _collect(*process_repo(repo, cm, cfg, client, resolver))
+                failures.pop(repo.name, None)
+                if attempt > 1:
+                    print(f"  {repo.name} 重试成功")
+                return True
+            except RateLimitError as exc:
+                failures[repo.name] = str(exc)[:500]
+                print(f"  失败：{exc}（限流，留到下一轮）")
+                return False
+            except (GitError, RuntimeError, OSError) as exc:
+                failures[repo.name] = str(exc)[:500]
+                last = attempt >= ATTEMPTS_PER_ROUND
+                print(f"  失败：{exc}" + ("" if last else "，立刻重试"))
+                # 只剩它一个时没有别的仓库能插空，必须自己隔开
+                if not last and alone:
+                    sleeper(LAST_REPO_RETRY_WAIT)
+        return False
+
     for i, repo in enumerate(kept, 1):
         print(f"[{i}/{len(kept)}] {repo.name} ...", flush=True)
-        try:
-            r, b, ai, evs = process_repo(repo, cm, cfg, client, resolver)
-            rows.extend(merge_by_name(r))
-            bots.extend(b)
-            ai_records.append(ai)
-            all_events.extend(evs)
-        except (GitError, RateLimitError, RuntimeError, OSError) as exc:
-            failures[repo.name] = str(exc)[:500]
-            print(f"  失败：{exc}")
+        _try_repo(repo, alone=False)
 
     # 只重跑失败的那几个，而不是整个流程。38 个仓库跑一次 24 分钟，
     # 整体重试会让一个仓库的瞬时网络抖动拖着其余 37 个重新 fetch 一遍。
-    # 失败原因多是连接超时这类瞬时故障，单独重跑几十秒就够。
     retries = getattr(cfg, "repo_retries", DEFAULT_REPO_RETRIES)
-    wait = getattr(cfg, "repo_retry_wait", REPO_RETRY_WAIT)
-    for attempt in range(1, retries + 1):
+    wait = getattr(cfg, "repo_retry_wait", LAST_REPO_RETRY_WAIT)
+    for attempt in range(2, retries + 1):
         if not failures:
             break
         retry_names = list(failures.keys())
-        if wait:
-            print(f"\n{len(retry_names)} 个仓库失败，{wait} 秒后重试"
-                  f"（第 {attempt}/{retries} 轮）")
-            time.sleep(wait)
-        print(f"重试：{'、'.join(retry_names)}")
+        print(f"\n{len(retry_names)} 个仓库失败，重试（第 {attempt}/{retries} 轮）："
+              f"{'、'.join(retry_names)}")
         for repo in [r for r in kept if r.name in failures]:
-            try:
-                r, b, ai, evs = process_repo(repo, cm, cfg, client, resolver)
-                rows.extend(merge_by_name(r))
-                bots.extend(b)
-                ai_records.append(ai)
-                all_events.extend(evs)
-                del failures[repo.name]
-                print(f"  {repo.name} 重试成功")
-            except (GitError, RateLimitError, RuntimeError, OSError) as exc:
-                failures[repo.name] = str(exc)[:500]
-                print(f"  {repo.name} 仍失败：{exc}")
+            alone = len(failures) == 1
+            if alone and wait:
+                # 只剩一个仓库时，两次尝试之间保证间隔
+                time.sleep(wait)
+            _try_repo(repo, alone=alone)
 
     _write_outputs(rows, bots, ai_records, resolver, cfg, out)
     meta = _write_meta(all_repos, kept, skipped, failures, rows, bots,
@@ -466,7 +491,8 @@ def run(cfg, token: str) -> int:
     # 它有自愈机制（下次把两天的内容一起推），且群里没消息自然会发现。
     if getattr(cfg, "events", True):
         try:
-            _record_and_notify(all_events, meta, cfg, len(kept), rows)
+            _record_and_notify(all_events, meta, cfg,
+                               len(kept) - len(failures), rows)
         except Exception as exc:                       # noqa: BLE001
             print(f"注意：事件留存或推送失败（{exc}），统计结果不受影响")
 
@@ -515,6 +541,27 @@ def _read_rows_csv(path: Path) -> list:
     return rows
 
 
+def _read_run_meta(path: Path) -> dict:
+    """读回 --fetch 那步写下的 run_meta.json。
+
+    存在的理由：拆分模式下推送是独立一次运行，内存里没有采集结果。
+    以前这里凭空造了个空 meta，于是 failures 恒为空 —— 日报永远不会
+    点名失败仓库，而全流程模式却会。日常跑的正是拆分模式，等于这个
+    提示从来没生效过。
+
+    读不到就返回空字典：底部累计与失败行一起省略，好过让推送失败。
+    """
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, OSError) as exc:
+        print(f"注意：{path} 读取失败（{exc}），失败仓库提示将省略")
+        return {}
+
+
 def _notify_only(cfg, out: Path) -> int:
     """只算增量并推送，不跑采集管线。
 
@@ -526,9 +573,14 @@ def _notify_only(cfg, out: Path) -> int:
         print(f"注意：{out / 'by_repo.csv'} 不存在或为空，"
               "底部累计将省略。请先跑一次 --no-notify")
 
+    saved = _read_run_meta(out / "run_meta.json")
     meta = {"contributors": len(summarize(rows)) if rows else None,
-            "repos_processed": None, "repos_in_scope": None,
+            "repos_processed": saved.get("repos_processed"),
+            "repos_in_scope": saved.get("repos_in_scope"),
+            "failures": saved.get("failures", {}),
             "window": {"since": "", "until": ""}}
+    if meta["failures"]:
+        print(f"上次抓取有 {len(meta['failures'])} 个仓库失败，将在日报中说明")
     try:
         _record_and_notify([], meta, cfg, 0, rows)
     except Exception as exc:                       # noqa: BLE001
@@ -609,6 +661,10 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
                                  until=meta["window"]["until"])
         result = store.upsert_events(events, run_id)
         store.finish_run(run_id, repos_processed=repos_processed)
+        # 失败要在 finish_run 之后写：连续计数靠 repo_failures 与
+        # repos_processed 两者共同认出"这是采集 run"，而后者由 finish_run
+        # 落盘。全军覆没时 repos_processed 正好是 0，靠的就是这张表。
+        store.record_failures(run_id, meta.get("failures", {}))
         print(f"事件库 {cfg.events_db}：本次新增 {len(result.new_events)} 条，"
               f"状态变更 {len(result.state_changes)} 条")
 
@@ -653,6 +709,9 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             repos_processed=meta.get("repos_processed"),
             repos_total=meta.get("repos_in_scope"),
             failed_repos=sorted(meta.get("failures", {}).keys()),
+            chronic_failures={
+                n: c for n, c in store.consecutive_failures().items()
+                if c >= CHRONIC_FAILURE_THRESHOLD},
             recent_label=recent_label,
             recent_counts=recent_counts,
         )

@@ -119,9 +119,11 @@ class Config:
     # 整体）。每天定时跑时打开，让计划任务据此跳过推送——否则数据不完整
     # 却照常推送，卡片底部写"1/2 个仓库"而没有任何警示。
     strict_repos: bool = False
-    # 失败仓库单独重试的轮数与轮间隔（秒）。只重跑失败的那几个。
+    # 失败仓库的重试轮数。每轮内失败会就地重试一次，故最多 retries*2 次。
     repo_retries: int = 3
-    repo_retry_wait: int = 60
+    # 只剩最后一个仓库待重试时的间隔秒数。别的仓库还在跑时不等待 ——
+    # 那些仓库本身就把两次尝试隔开了。
+    repo_retry_wait: int = 30
     # 周报 / 月报：按事件真实时间统计区间，汇总加排行榜，不逐条列。
     # 与日报的 first_seen_run 口径不同，理由见 notify/period.py。
     weekly: bool = False
@@ -198,10 +200,12 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
                    help="只计算增量并推送，跳过采集管线（秒级完成）。"
                         "用于拆分模式的推送那一步，须先跑过 --no-notify")
     p.add_argument("--repo-retries", type=int, default=3,
-                   help="失败仓库单独重试的轮数（默认 3）。只重跑失败的那几个，"
+                   help="失败仓库的重试轮数（默认 3）。每轮内失败会就地重试一次，"
+                        "故每个仓库最多尝试 6 次。只重跑失败的那几个，"
                         "不重来整个流程——38 个仓库跑一次要 24 分钟")
-    p.add_argument("--repo-retry-wait", type=int, default=60,
-                   help="失败仓库重试的轮间隔秒数（默认 60）")
+    p.add_argument("--repo-retry-wait", type=int, default=30,
+                   help="只剩最后一个仓库待重试时的间隔秒数（默认 30）。"
+                        "还有别的仓库在跑时不等待")
     p.add_argument("--weekly", action="store_true",
                    help="推送上周汇总（周一跑）。按事件真实时间统计，"
                         "汇总加活跃贡献者/仓库排行榜，不跑采集管线")

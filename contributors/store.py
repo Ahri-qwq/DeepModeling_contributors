@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS digests (
 CREATE INDEX IF NOT EXISTS idx_digests_run ON digests(run_id);
 
 CREATE INDEX IF NOT EXISTS idx_changes_run ON event_state_changes(run_id);
+
+-- 哪个仓库在哪次运行抓取失败。存在的理由：没有这张表，"连续挂 30 天"
+-- 和"挂了一天"在记录里长得一模一样 —— 两者都只打印一行"N 个仓库失败"。
+-- first_seen_run 的补齐机制保证只要哪天成功就不丢数据，但前提是"总有
+-- 一天会成功"；仓库改名、删除、权限变更时永远不会自愈，必须有人去看。
+CREATE TABLE IF NOT EXISTS repo_failures (
+    run_id    INTEGER NOT NULL REFERENCES runs(run_id),
+    repo      TEXT NOT NULL,
+    error     TEXT,
+    failed_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, repo)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_failures_repo ON repo_failures(repo);
 """
 
 
@@ -179,6 +193,75 @@ class EventStore:
         return self.conn.execute(
             "SELECT COUNT(*) FROM runs WHERE run_id > ? AND finished_at IS NOT NULL",
             (last,)).fetchone()[0]
+
+    # ---- 抓取失败追踪 ----
+
+    def record_failures(self, run_id: int, failures: dict) -> None:
+        """记下本次运行有哪些仓库没抓到。failures 是 {仓库名: 错误摘要}。
+
+        只在真正跑了采集的那步调用。拆分模式下 --only-notify 不写，
+        否则会往表里插一堆空记录，把连续计数搅乱。
+        """
+        if not failures:
+            return
+        now = _now()
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO repo_failures "
+            "(run_id, repo, error, failed_at) VALUES (?,?,?,?)",
+            [(run_id, name, str(err)[:500], now)
+             for name, err in sorted(failures.items())])
+        self.conn.commit()
+
+    def _fetch_run_ids(self, limit: int = 30) -> list:
+        """最近若干次真正跑了采集的 run，新的在前。
+
+        判定标准是"这次运行有没有碰仓库"，而不是"有没有成功处理仓库"：
+        repos_processed>0 或在 repo_failures 里留了记录，两者取并集。
+        只看 repos_processed>0 会漏掉全军覆没的那次 —— 38 个仓库全挂时
+        它正好是 0，而那恰恰是最该告警的情况。
+
+        为什么要滤掉推送 run：日常是拆分模式，--fetch 与 --only-notify
+        各占一个 run，库里过半数 run 是推送步骤、一个仓库都没碰。若把
+        它们算进连续失败的分母，计数会被稀释 —— 昨天挂了、今天推送步骤
+        "没挂"，连续数就断了。
+        """
+        rows = self.conn.execute(
+            "SELECT run_id FROM runs WHERE finished_at IS NOT NULL "
+            "AND (repos_processed > 0 OR run_id IN "
+            "     (SELECT DISTINCT run_id FROM repo_failures)) "
+            "ORDER BY run_id DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [r["run_id"] for r in rows]
+
+    def consecutive_failures(self) -> dict:
+        """每个仓库最近连续失败了几次采集。返回 {仓库名: 连续次数}。
+
+        从最近一次采集 run 往回数，一旦某次采集里它没出现（说明那次
+        成功了）就归零。只返回当前仍在连续失败中的仓库 —— 早就修好的
+        历史故障不该出现在今天的日报里。
+        """
+        run_ids = self._fetch_run_ids()
+        if not run_ids:
+            return {}
+
+        rows = self.conn.execute(
+            "SELECT run_id, repo FROM repo_failures WHERE run_id IN "
+            f"({','.join('?' * len(run_ids))})", run_ids).fetchall()
+        by_run = {}
+        for r in rows:
+            by_run.setdefault(r["run_id"], set()).add(r["repo"])
+
+        # 最近一次采集就没失败的仓库，连续数为 0，不必再往回数
+        streaks = {}
+        for name in by_run.get(run_ids[0], set()):
+            n = 0
+            for rid in run_ids:
+                if name in by_run.get(rid, set()):
+                    n += 1
+                else:
+                    break
+            streaks[name] = n
+        return streaks
 
     # ---- 战报存档 ----
 

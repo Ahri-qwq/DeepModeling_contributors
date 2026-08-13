@@ -701,3 +701,44 @@ class TestRecentActivity:
                           now=datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc))
         assert got[0] == ""
         assert got[1] == {}
+
+
+class TestChronicFailures:
+    """连续多次失败的仓库要单独告警。
+
+    与"未能抓取"分行的理由：那条说的是"今天没抓到、明天会补"，
+    对连挂三天的仓库不再成立 —— 改名、删除或权限变更永远不会自愈。
+    """
+
+    def test_chronic_repo_is_warned(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={"abacus-develop": 3})
+        text = card.render_text(d)
+        assert "连续抓取失败" in text
+        assert "abacus-develop" in text and "3" in text
+
+    def test_no_line_when_none_chronic(self):
+        d = build(UpsertResult([_commit("a")], []), chronic_failures={})
+        assert "连续抓取失败" not in card.render_text(d)
+
+    def test_chronic_repo_not_duplicated_in_failed_line(self):
+        """达阈值的仓库只出现在告警行，不在"未能抓取"里重复。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  failed_repos=["abacus-develop", "deepmd-kit"],
+                  chronic_failures={"abacus-develop": 3})
+        text = card.render_text(d)
+        failed_line = [l for l in text.split("\n") if l.startswith("未能抓取")]
+        assert failed_line and "abacus-develop" not in failed_line[0]
+        assert "deepmd-kit" in failed_line[0]
+
+    def test_chronic_shown_when_no_increment(self):
+        """昨日无更新那条回退卡片里同样要告警。"""
+        d = build(UpsertResult([], []),
+                  chronic_failures={"abacus-develop": 5},
+                  recent_label="本周至今", recent_counts={"commit": 3})
+        assert "连续抓取失败" in card.render_text(d)
+
+    def test_many_chronic_are_truncated(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={f"repo{i}": 3 for i in range(20)})
+        assert "还有" in card.render_text(d)

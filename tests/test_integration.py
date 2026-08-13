@@ -82,8 +82,8 @@ def mk_cfg(tmp_path, **kw):
     return Config(**base)
 
 
-def mk_repo():
-    return RepoInfo(name="tiny", default_branch="main", size_mb=1.0,
+def mk_repo(name="tiny"):
+    return RepoInfo(name=name, default_branch="main", size_mb=1.0,
                     pushed_at="2026-02-20T00:00:00Z", is_fork=False,
                     upstream=None, upstream_family=None, archived=False)
 
@@ -880,8 +880,8 @@ def test_repo_retry_gives_up_and_records_failure(tiny_repo, monkeypatch):
     monkeypatch.setattr(m, "process_repo", always_fail)
     m.run(cfg, token="fake")
 
-    # 首次 + 2 次重试 = 3 次
-    assert len(calls) == 3
+    # 每轮内失败就地重试一次，2 轮 = 4 次
+    assert len(calls) == 4
     import json as _json
     meta = _json.loads(
         (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
@@ -902,3 +902,208 @@ def test_no_retry_when_all_succeed(tiny_repo, monkeypatch):
     monkeypatch.setattr(m, "process_repo", counted)
     m.run(cfg, token="fake")
     assert calls == ["tiny"]
+
+
+# --- 拆分模式下的失败可见性 ---
+#
+# 日常跑的就是拆分模式（--fetch 一次 run、--only-notify 另一次 run）。
+# 以前 _notify_only 凭空造空 meta，failures 恒为空，日报永远不点名失败
+# 仓库 —— 而全流程模式却会。等于这个提示在生产路径上从来没生效过。
+
+
+def _seed_baseline(m, cfg):
+    """跑一次把事件入库并定基线，返回可用于 --only-notify 的 cfg。"""
+    m.run(cfg, token="fake")
+    from contributors.store import EventStore
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    s.mark_notify_baseline()
+    s.close()
+
+
+def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
+    """--only-notify 要从 run_meta.json 读回失败仓库并写进日报。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    _seed_baseline(m, cfg)
+
+    # 造一条新事件 + 一个失败仓库，模拟抓取那步的结果
+    from contributors.store import EventStore
+    from contributors.events import Event
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    run = s.begin_run()
+    s.upsert_events([Event("pr", "tiny", 42, None, "新 PR",
+                           "https://x/pull/42", "alice",
+                           "2026-08-12T00:00:00+00:00", "open")], run)
+    s.finish_run(run, repos_processed=1)
+    s.close()
+
+    meta_path = Path(cfg.out_dir) / "run_meta.json"
+    import json as _json
+    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["failures"] = {"abacus-develop": "Connection was reset"}
+    meta_path.write_text(_json.dumps(meta, ensure_ascii=False),
+                         encoding="utf-8")
+
+    cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                  only_notify=True, events_db=cfg.events_db)
+    sent = []
+    monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+    m.run(cfg2, token="fake")
+
+    body = sent[0]["card"]["elements"][0]["text"]["content"]
+    assert "abacus-develop" in body, "拆分模式必须点名失败仓库"
+    assert "明天" in body, "要说明增量会补在明天"
+
+
+def test_only_notify_survives_missing_meta(tiny_repo, monkeypatch):
+    """run_meta.json 缺失时降级：照常推送，不抛异常。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    _seed_baseline(m, cfg)
+    (Path(cfg.out_dir) / "run_meta.json").unlink()
+
+    cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                  only_notify=True, notify_empty=True,
+                  events_db=cfg.events_db)
+    monkeypatch.setattr(m.feishu, "send", lambda p: None)
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+    assert m.run(cfg2, token="fake") == 0
+
+
+def test_only_notify_survives_corrupt_meta(tiny_repo, monkeypatch):
+    """run_meta.json 损坏时同样降级，不让推送失败。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    _seed_baseline(m, cfg)
+    (Path(cfg.out_dir) / "run_meta.json").write_text(
+        "{坏掉的 json", encoding="utf-8")
+
+    cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                  only_notify=True, notify_empty=True,
+                  events_db=cfg.events_db)
+    monkeypatch.setattr(m.feishu, "send", lambda p: None)
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+    assert m.run(cfg2, token="fake") == 0
+
+
+def test_repos_processed_matches_meta(tiny_repo, monkeypatch):
+    """写进事件库的 repos_processed 要与 run_meta.json 一致。
+
+    以前传的是 len(kept)（失败之前的数目），于是库里看这次运行是完美的，
+    监控盯着这张表永远不会报警。
+    """
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, repo_retries=1)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    monkeypatch.setattr(m, "process_repo", _always_fail)
+    m.run(cfg, token="fake")
+
+    import json as _json
+    meta = _json.loads(
+        (Path(cfg.out_dir) / "run_meta.json").read_text(encoding="utf-8"))
+    from contributors.store import EventStore
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    row = s.conn.execute(
+        "SELECT repos_processed FROM runs ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    s.close()
+    assert row[0] == meta["repos_processed"] == 0
+
+
+# --- 重试策略：不阻塞后续仓库 ---
+
+
+def _always_fail(repo, cm, cfg_, client, resolver):
+    raise RuntimeError("一直失败")
+
+
+def test_failure_retries_in_place_then_moves_on(tiny_repo, monkeypatch):
+    """失败就地重试一次，然后立刻跑下一个仓库，不等待。
+
+    关键是顺序：a 失败两次后必须马上轮到 b，而不是让 b 干等。
+    """
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, repo_retries=1)
+    m = _patch_network(monkeypatch, [mk_repo("a"), mk_repo("b")], cfg)
+
+    calls = []
+
+    def fail_a(repo, cm, cfg_, client, resolver):
+        calls.append(repo.name)
+        if repo.name == "a":
+            raise RuntimeError("a 总是失败")
+        return [], [], {"repo": repo.name, "traced": {}, "untraced": 0}, []
+
+    monkeypatch.setattr(m, "process_repo", fail_a)
+    m.run(cfg, token="fake")
+
+    assert calls == ["a", "a", "b"], "a 就地重试一次后应立刻轮到 b"
+
+
+def test_rate_limit_does_not_retry_in_place(tiny_repo, monkeypatch):
+    """限流不就地重试 —— 立刻再打一次只会加深限流。"""
+    from contributors.api_stats import RateLimitError
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, repo_retries=1)
+    m = _patch_network(monkeypatch, [mk_repo("a")], cfg)
+
+    calls = []
+
+    def rate_limited(repo, cm, cfg_, client, resolver):
+        calls.append(repo.name)
+        raise RateLimitError("限流了")
+
+    monkeypatch.setattr(m, "process_repo", rate_limited)
+    m.run(cfg, token="fake")
+
+    assert len(calls) == 1, "限流那轮只该尝试一次"
+
+
+def test_last_repo_waits_between_attempts(tiny_repo, monkeypatch):
+    """只剩一个仓库时，两次尝试之间要隔开。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True,
+                 repo_retries=2, repo_retry_wait=30)
+    m = _patch_network(monkeypatch, [mk_repo("a")], cfg)
+    slept = []
+    monkeypatch.setattr(m.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(m, "process_repo", _always_fail)
+    m.run(cfg, token="fake")
+
+    assert slept, "只剩一个仓库时必须有间隔"
+    assert all(s == 30 for s in slept)
+
+
+def test_multiple_repos_do_not_block(tiny_repo, monkeypatch):
+    """还有别的仓库在跑时不应该等待。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True,
+                 repo_retries=1, repo_retry_wait=30)
+    m = _patch_network(monkeypatch, [mk_repo("a"), mk_repo("b")], cfg)
+    slept = []
+    monkeypatch.setattr(m.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(m, "process_repo", _always_fail)
+    m.run(cfg, token="fake")
+
+    assert not slept, "第一轮有多个仓库时不该干等"
+
+
+def test_chronic_failure_warned_after_threshold(tiny_repo, monkeypatch):
+    """连续失败达到阈值后，日报里出现告警行。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                 notify_empty=True, repo_retries=1)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    _seed_baseline(m, cfg)
+
+    monkeypatch.setattr(m, "process_repo", _always_fail)
+    sent = []
+    monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+
+    for _ in range(m.CHRONIC_FAILURE_THRESHOLD):
+        cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                      notify_empty=True, repo_retries=1,
+                      events_db=cfg.events_db, out_dir=cfg.out_dir)
+        m.run(cfg2, token="fake")
+
+    body = sent[-1]["card"]["elements"][0]["text"]["content"]
+    assert "连续抓取失败" in body

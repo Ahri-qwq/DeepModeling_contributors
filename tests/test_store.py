@@ -378,3 +378,90 @@ class TestPeriodQuery:
     def test_empty_range_returns_empty(self, store):
         assert store.events_between("2026-01-01T00:00:00Z",
                                     "2026-01-02T00:00:00Z") == []
+
+
+# ---- 抓取失败追踪 ----
+
+
+def _fetch_run(store, failures=(), repos_processed=38):
+    """模拟一次真正跑了采集的运行。"""
+    rid = store.begin_run()
+    store.finish_run(rid, repos_processed=repos_processed)
+    store.record_failures(rid, {n: "连接超时" for n in failures})
+    return rid
+
+
+def test_consecutive_failures_accumulates(store):
+    """同一仓库连续多次采集失败，计数累加。"""
+    for _ in range(3):
+        _fetch_run(store, failures=["abacus-develop"])
+    assert store.consecutive_failures() == {"abacus-develop": 3}
+
+
+def test_consecutive_failures_resets_after_success(store):
+    """中间成功一次，连续计数归零。"""
+    _fetch_run(store, failures=["abacus-develop"])
+    _fetch_run(store, failures=[])                 # 这次成功了
+    _fetch_run(store, failures=["abacus-develop"])
+    assert store.consecutive_failures() == {"abacus-develop": 1}
+
+
+def test_consecutive_failures_ignores_notify_runs(store):
+    """推送步骤（repos_processed=0）不参与计数。
+
+    拆分模式下库里过半数 run 是推送步骤，若算进分母，
+    连续失败计数会被稀释成 1。
+    """
+    _fetch_run(store, failures=["abacus-develop"])
+    rid = store.begin_run()                        # --only-notify 那步
+    store.finish_run(rid, repos_processed=0)
+    _fetch_run(store, failures=["abacus-develop"])
+    assert store.consecutive_failures() == {"abacus-develop": 2}
+
+
+def test_consecutive_failures_excludes_recovered(store):
+    """最近一次采集已成功的仓库不出现在结果里。"""
+    _fetch_run(store, failures=["deepmd-kit", "abacus-develop"])
+    _fetch_run(store, failures=["abacus-develop"])
+    assert store.consecutive_failures() == {"abacus-develop": 2}
+
+
+def test_record_failures_is_idempotent(store):
+    """同一 run 重复写不炸，也不会把计数翻倍。"""
+    rid = store.begin_run()
+    store.finish_run(rid, repos_processed=38)
+    store.record_failures(rid, {"tiny": "错误一"})
+    store.record_failures(rid, {"tiny": "错误二"})
+    assert store.consecutive_failures() == {"tiny": 1}
+
+
+def test_no_failures_means_empty(store):
+    """从没失败过时返回空字典，而不是报错。"""
+    _fetch_run(store, failures=[])
+    assert store.consecutive_failures() == {}
+
+
+def test_total_outage_still_counts(store):
+    """所有仓库都失败时 repos_processed=0，但仍要算作一次采集。
+
+    这正是最该告警的情况：若只认 repos_processed>0，全军覆没那几天
+    会被当成"没跑过采集"，连续计数永远起不来。
+    """
+    for _ in range(3):
+        rid = store.begin_run()
+        store.finish_run(rid, repos_processed=0)
+        store.record_failures(rid, {"tiny": "全挂了"})
+    assert store.consecutive_failures() == {"tiny": 3}
+
+
+def test_notify_only_run_does_not_break_streak(store):
+    """--only-notify 那步既没处理仓库也没失败记录，不该打断连续计数。"""
+    rid = store.begin_run()
+    store.finish_run(rid, repos_processed=0)
+    store.record_failures(rid, {"tiny": "挂了"})
+    notify = store.begin_run()               # 推送步骤
+    store.finish_run(notify, repos_processed=0)
+    rid = store.begin_run()
+    store.finish_run(rid, repos_processed=0)
+    store.record_failures(rid, {"tiny": "又挂了"})
+    assert store.consecutive_failures() == {"tiny": 2}

@@ -52,6 +52,9 @@ class Digest:
     # 本次未能抓取的仓库。底部的"36/38 个仓库"只给数字，看不出少了谁 ——
     # 列出名字，读日报的人才能判断自己关心的仓库在不在里面。
     failed_repos: list = field(default_factory=list)
+    # 连续失败达到阈值的仓库：{仓库名: 连续次数}。与 failed_repos 分开渲染，
+    # 因为语义不同 —— 那个是"今天没抓到、明天会补"，这个是"自愈机制救不了它"。
+    chronic_failures: dict = field(default_factory=dict)
     # 昨日无更新时贴的近期活动量。空标签表示三级回退都没找到数据。
     # 只存数字不存明细 —— 这是"证明系统在正常工作"的旁证，不是内容。
     recent_label: str = ""
@@ -128,6 +131,7 @@ def build(pending, last_notify_at: str = "",
           repos_processed: Optional[int] = None,
           repos_total: Optional[int] = None,
           failed_repos: Optional[list] = None,
+          chronic_failures: Optional[dict] = None,
           recent_label: str = "",
           recent_counts: Optional[dict] = None,
           now: Optional[datetime] = None) -> Digest:
@@ -174,7 +178,10 @@ def build(pending, last_notify_at: str = "",
     d.total_issues = total_issues
     d.repos_processed = repos_processed
     d.repos_total = repos_total
-    d.failed_repos = list(failed_repos or [])
+    d.chronic_failures = dict(chronic_failures or {})
+    # 达到告警阈值的仓库只出现在告警行，不在"未能抓取"行里重复一遍
+    d.failed_repos = [r for r in (failed_repos or [])
+                      if r not in d.chronic_failures]
     d.recent_label = recent_label
     d.recent_counts = dict(recent_counts or {})
     return d
