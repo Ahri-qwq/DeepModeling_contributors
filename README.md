@@ -451,21 +451,25 @@ py -3.12 -m contributors --monthly    # 上月一号 ~ 月末
 四个计划任务：
 
 ```
-schtasks /create /tn "DM日报-抓取" /tr "C:\...\daily_report.bat --fetch"   /sc daily   /st 10:00
-schtasks /create /tn "DM日报-推送" /tr "C:\...\daily_report.bat --push"    /sc daily   /st 11:03
+schtasks /create /tn "DM日报-抓取" /tr "C:\...\daily_report.bat --fetch"   /sc daily   /st 07:00
+schtasks /create /tn "DM日报-推送" /tr "C:\...\daily_report.bat --push"    /sc daily   /st 10:03
 schtasks /create /tn "DM周报"      /tr "C:\...\daily_report.bat --weekly"  /sc weekly  /d MON /st 11:15
 schtasks /create /tn "DM月报"      /tr "C:\...\daily_report.bat --monthly" /sc monthly /d 1   /st 11:30
 ```
 
-抓取与推送分成两个任务是因为抓取耗时不可控（受当天新提交量与网络影响，
-实测 24～28 分钟），而推送只读库、秒级完成，可以准点。两者之间留一小时
-余量。若不在乎准点，用 `--daily` 一个任务串联即可。
+**抓取必须在 10:00 之前跑完。** 日报窗口锚定当天 10:00，10:00 之后入库的
+事件落进第二天的窗口，当天日报会是空的。07:00 起跑留约 3 小时余量——
+全量抓取实测 24～28 分钟，剩下的余量给失败重试。
+
+抓取与推送分成两个任务是因为抓取耗时不可控（受当天新提交量与网络影响），
+而推送只读库、秒级完成，可以准点。若不在乎准点，用 `--daily` 一个任务
+串联即可，但要保证它在 10:00 前跑完。
 
 必须以当前用户身份运行——token 来自 `gh` 的 keyring，换用户取不到。
 机器关机或休眠时任务不会跑，这是本机方案的固有限制。
 
 飞书对单个机器人限流 100 次/分钟、5 次/秒，官方文档建议避开 10:00、
-17:30 这类整点半点。故推送时刻取 11:03 而非 11:00；抓取那步不发消息，
+17:30 这类整点半点。故推送时刻取 10:03 而非 10:00；抓取那步不发消息，
 没有这个约束。
 
 ### 仓库失败时
