@@ -614,10 +614,13 @@ def test_events_after_baseline_still_shown(store):
     rid2 = store.begin_run()
     store.upsert_events([_commit(sha="new")], rid2)
     store.finish_run(rid2, repos_processed=1)
-    # 内存库同一微秒内跑完，时间戳会撞在一起；显式拉开，模拟真实的先后
+    # 内存库同一微秒内跑完，时间戳会撞在一起；把 new 显式推到基线之后。
+    # 不能写死某个钟点 —— 基线时刻是"现在"，硬编码的时刻跑到下午就失效了。
+    from datetime import datetime, timedelta
+    later = (datetime.fromisoformat(store._baseline_at())
+             + timedelta(seconds=1)).isoformat()
     store.conn.execute(
-        "UPDATE events SET first_seen_at='2026-08-13T09:00:00+00:00' "
-        "WHERE sha='new'")
+        "UPDATE events SET first_seen_at=? WHERE sha='new'", (later,))
     store.conn.commit()
 
     got = store.pending_in_window("2020-01-01T00:00:00+00:00",
