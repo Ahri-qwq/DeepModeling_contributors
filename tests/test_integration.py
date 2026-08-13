@@ -1,7 +1,7 @@
 """端到端测试：现场造小仓库跑完整 git 管线，不碰网络。"""
 import os
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -86,6 +86,17 @@ def mk_repo(name="tiny"):
     return RepoInfo(name=name, default_branch="main", size_mb=1.0,
                     pushed_at="2026-02-20T00:00:00Z", is_fork=False,
                     upstream=None, upstream_family=None, archived=False)
+
+
+def _tomorrow_cst() -> str:
+    """明天（东八区）的日期串。
+
+    日报窗口锚定当天 10:00，"此刻"入库的测试数据多半落在今天窗口之外
+    （今天的窗口在今天 10:00 就关了）。指定明天的日报才能覆盖此刻。
+    """
+    from contributors.notify.period import CST
+    return (datetime.now(timezone.utc).astimezone(CST)
+            + timedelta(days=1)).date().isoformat()
 
 
 def test_collects_commits_from_all_branches(tiny_repo):
@@ -792,8 +803,11 @@ def test_only_notify_pushes_without_running_pipeline(tiny_repo, monkeypatch):
     s.finish_run(run, repos_processed=1)
     s.close()
 
+    # 事件是"此刻"入库的，而今天的窗口在今天 10:00 就关了。指定明天的日报
+    # 才能覆盖此刻 —— 这同时也验证了 --date 补推
     cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
-                  only_notify=True, events_db=cfg.events_db)
+                  only_notify=True, events_db=cfg.events_db,
+                  date=_tomorrow_cst())
     sent = []
     monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
@@ -946,8 +960,11 @@ def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
     meta_path.write_text(_json.dumps(meta, ensure_ascii=False),
                          encoding="utf-8")
 
+    # 事件是"此刻"入库的，而今天的窗口在今天 10:00 就关了。指定明天的日报
+    # 才能覆盖此刻 —— 这同时也验证了 --date 补推
     cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
-                  only_notify=True, events_db=cfg.events_db)
+                  only_notify=True, events_db=cfg.events_db,
+                  date=_tomorrow_cst())
     sent = []
     monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
@@ -1099,11 +1116,71 @@ def test_chronic_failure_warned_after_threshold(tiny_repo, monkeypatch):
     monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
 
+    # 把基线那次成功挪到窗口之前：否则"今天成功过"会正当地压掉缺失提醒，
+    # 而现实中不会出现"同一天内先成功、再连挂三次"这种序列
+    from contributors.store import EventStore
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    s.conn.execute("UPDATE repo_successes SET succeeded_at='2020-01-01T00:00:00+00:00'")
+    s.conn.commit()
+    s.close()
+
     for _ in range(m.CHRONIC_FAILURE_THRESHOLD):
         cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                       notify_empty=True, repo_retries=1,
-                      events_db=cfg.events_db, out_dir=cfg.out_dir)
+                      events_db=cfg.events_db, out_dir=cfg.out_dir,
+                      date=_tomorrow_cst())
         m.run(cfg2, token="fake")
 
     body = sent[-1]["card"]["elements"][0]["text"]["content"]
     assert "连续抓取失败" in body
+
+
+def test_report_date_drives_title(tiny_repo, monkeypatch):
+    """--date 补推时，标题日期要跟着指定的那天走，不是生成那天。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    _seed_baseline(m, cfg)
+
+    cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                  notify_empty=True, only_notify=True,
+                  events_db=cfg.events_db, date="2026-08-14")
+    sent = []
+    monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+    m.run(cfg2, token="fake")
+
+    title = sent[0]["card"]["header"]["title"]["content"]
+    assert "2026-08-14" in title
+
+
+def test_same_date_pushed_twice_is_identical(tiny_repo, monkeypatch):
+    """同一天推两次内容必须一样 —— 这是窗口锚定的全部意义。"""
+    cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
+    m = _patch_network(monkeypatch, [mk_repo()], cfg)
+    _seed_baseline(m, cfg)
+
+    from contributors.store import EventStore
+    from contributors.events import Event
+    s = EventStore(cfg.events_db)
+    s.init_schema()
+    run = s.begin_run()
+    s.upsert_events([Event("pr", "tiny", 99, None, "某 PR",
+                           "https://x/pull/99", "alice",
+                           "2026-08-13T00:00:00+00:00", "open")], run)
+    s.finish_run(run, repos_processed=1)
+    s.close()
+
+    sent = []
+    monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
+    monkeypatch.setattr(m.feishu, "load_env", lambda: None)
+    for _ in range(2):
+        cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
+                      notify_empty=True, only_notify=True,
+                      events_db=cfg.events_db, date=_tomorrow_cst())
+        m.run(cfg2, token="fake")
+
+    assert len(sent) == 2
+    first = sent[0]["card"]["elements"][0]["text"]["content"]
+    second = sent[1]["card"]["elements"][0]["text"]["content"]
+    assert first == second, "同一天重复推送的内容必须一致"

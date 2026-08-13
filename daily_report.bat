@@ -20,21 +20,38 @@ rem  a failed fetch still lets the push run, which then reports the
 rem  previous run's data with no warning. Chaining makes the push
 rem  conditional on a successful fetch.
 rem
-rem  The fetch step retries each failed repo 3 rounds (60s apart)
-rem  inside Python. Repos that still fail are named in the card and
-rem  their increments roll into the next day's report, so the push
-rem  is not blocked by one unreachable repo. The outer retry below
-rem  only fires when the whole run failed (no repo list, no network).
+rem  The fetch step retries each failed repo: a failure is retried
+rem  once on the spot, then it moves on to the next repo instead of
+rem  waiting. Failed repos are re-run for 3 rounds total, so each
+rem  repo gets up to 6 attempts. Rate-limit errors skip the in-place
+rem  retry (hitting again immediately only deepens the limit) and
+rem  wait for the next round. Only when a single repo is left do
+rem  attempts get spaced 30s apart. Repos that still fail are named
+rem  in the card and their increments roll into the next day's
+rem  report, so the push is not blocked by one unreachable repo.
+rem  The outer retry below only fires when the whole run failed
+rem  (no repo list, no network).
+rem
+rem  The daily report window is anchored at 10:00 CST and decided by
+rem  the DATE, not by when the push runs: the 8-13 report is always
+rem  8-12 10:00 ~ 8-13 10:00. Pushing twice the same day therefore
+rem  yields identical content, and any re-fetch inside the window is
+rem  picked up automatically. To re-push an earlier day:
+rem    py -3.12 -m contributors --daily --only-notify --notify ^
+rem       --date 2026-08-12
 rem
 rem  If you prefer two separate scheduled tasks (exact push time),
 rem  use --fetch and --push, and check the log for the fetch exit
 rem  code. See STATUS file written below.
 rem
 rem  Suggested schedule (full run takes ~25 min, so leave margin):
-rem    10:00  daily_report.bat --fetch
-rem    11:03  daily_report.bat --push
-rem  Feishu docs advise avoiding exact hour / half-hour marks
-rem  (rate limit 100/min, 5/sec), hence 11:03 rather than 11:00.
+rem    07:00  daily_report.bat --fetch
+rem    10:03  daily_report.bat --push
+rem  The fetch MUST finish before the 10:00 window closes, otherwise
+rem  its events land in the next day's window and today's report is
+rem  empty. 07:00 leaves ~3h of margin for retries. Feishu docs
+rem  advise avoiding exact hour / half-hour marks (rate limit
+rem  100/min, 5/sec), hence 10:03 rather than 10:00.
 rem  The fetch step has no such constraint - it sends nothing.
 rem
 rem  NOTE: comments here are ASCII on purpose. cmd.exe re-reads the

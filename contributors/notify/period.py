@@ -10,7 +10,7 @@
 不逐条列条目：一周几百条会把群消息刷屏，周月报的价值在趋势而非明细。
 """
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from .card import SIZE_LIMIT, _escape
@@ -71,6 +71,30 @@ def last_month_range(now: Optional[datetime] = None) -> tuple:
     last_day_prev = first_this - timedelta(days=1)
     first_prev = datetime(last_day_prev.year, last_day_prev.month, 1)
     return (_cst_midnight_utc(first_prev), _cst_midnight_utc(first_this))
+
+
+# 日报窗口的锚点小时（东八区）。窗口是"昨天这个点到今天这个点"。
+DAILY_ANCHOR_HOUR = 10
+
+
+def daily_range(day: Optional[date] = None, hour: int = DAILY_ANCHOR_HOUR,
+                now: Optional[datetime] = None) -> tuple:
+    """某日日报的窗口：前一天 hour 点到当天 hour 点（东八区），返回 UTC 半开区间。
+
+    锚定整点而不是"此刻往前 24 小时"，是为了让补推可复现：10 点推送失败、
+    11 点手动补推，若按"此刻往前 24 小时"算，昨天 10-11 点那一小时两个窗口
+    都不覆盖，会永久漏掉。锚定后 8-13 的日报永远是同一个区间，跑几次都一样。
+
+    切的是**入库时间**（events.first_seen_at），不是 git 时间 —— 理由见
+    events 表 first_seen_at 列的注释。
+    """
+    if day is None:
+        ref = (now or datetime.now(timezone.utc)).astimezone(CST)
+        day = ref.date()
+    end_local = datetime(day.year, day.month, day.day, hour, tzinfo=CST)
+    start_local = end_local - timedelta(days=1)
+    return (start_local.astimezone(timezone.utc).isoformat(),
+            end_local.astimezone(timezone.utc).isoformat())
 
 
 def this_week_range(now: Optional[datetime] = None) -> tuple:

@@ -578,6 +578,7 @@ def _notify_only(cfg, out: Path) -> int:
             "repos_processed": saved.get("repos_processed"),
             "repos_in_scope": saved.get("repos_in_scope"),
             "failures": saved.get("failures", {}),
+            "succeeded": saved.get("succeeded", []),
             "window": {"since": "", "until": ""}}
     if meta["failures"]:
         print(f"上次抓取有 {len(meta['failures'])} 个仓库失败，将在日报中说明")
@@ -665,6 +666,9 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         # repos_processed 两者共同认出"这是采集 run"，而后者由 finish_run
         # 落盘。全军覆没时 repos_processed 正好是 0，靠的就是这张表。
         store.record_failures(run_id, meta.get("failures", {}))
+        # 成功也要记：日报问的是"过去 24 小时内成功过没有"，只有失败记录
+        # 的话，"没失败"既可能是成功、也可能是压根没跑，两者分不开。
+        store.record_successes(run_id, meta.get("succeeded", []))
         print(f"事件库 {cfg.events_db}：本次新增 {len(result.new_events)} 条，"
               f"状态变更 {len(result.state_changes)} 条")
 
@@ -688,8 +692,18 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print("首次运行，已建库但不推送；下次运行起才有增量")
             return
 
-        pending = store.pending_since_last_notify()
+        # 按锚定窗口取内容：8-13 的日报恒为 8-12 10:00 ~ 8-13 10:00（东八区），
+        # 与实际推送时刻无关。补推、重跑抓取都不会改变已定日期的内容 ——
+        # 窗口内补抓的自动进当天，窗口后补抓的自然进第二天。
+        win_start, win_end = period.daily_range(_report_date(cfg))
+        pending = store.pending_in_window(win_start, win_end)
         totals = _year_totals(rows)
+
+        # 数据缺失提醒的判据是"这个窗口内成功过没有"，而不是"最后一次跑挂没挂"。
+        # 7 点失败、8 点补跑成功，10 点推送时就不该再提醒。
+        missing = store.repos_missing_since(win_start, win_end)
+        chronic = {n: c for n, c in store.consecutive_failures().items()
+                   if c >= CHRONIC_FAILURE_THRESHOLD and n in missing}
 
         # 无增量时准备一句近期活动量。群里一天没消息，第一反应是脚本挂了，
         # 所以宁可发一条"昨日无更新 + 本周至今 N 次提交"。
@@ -701,6 +715,9 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         d = digest.build(
             pending,
             last_notify_at=_last_notify_time(store),
+            # 标题日期要跟着 --date 走：补推 8-14 的日报，标题不能写成
+            # 生成那天。窗口终点就是那天的 10:00，拿它当参考时刻正合适。
+            now=datetime.fromisoformat(win_end),
             total_contributors=meta.get("contributors"),
             total_commits=totals["commits"],
             total_prs_merged=totals["pr_merged"],
@@ -708,10 +725,8 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             total_issues=totals["issue_created"],
             repos_processed=meta.get("repos_processed"),
             repos_total=meta.get("repos_in_scope"),
-            failed_repos=sorted(meta.get("failures", {}).keys()),
-            chronic_failures={
-                n: c for n, c in store.consecutive_failures().items()
-                if c >= CHRONIC_FAILURE_THRESHOLD},
+            failed_repos=sorted(n for n in missing if n not in chronic),
+            chronic_failures=chronic,
             recent_label=recent_label,
             recent_counts=recent_counts,
         )
@@ -745,6 +760,14 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print(f"注意：{msg}")
     finally:
         store.close()
+
+
+def _report_date(cfg):
+    """--date 指定的日报日期，未指定时返回 None（由 daily_range 取今天）。"""
+    raw = getattr(cfg, "date", None)
+    if not raw:
+        return None
+    return datetime.strptime(raw, "%Y-%m-%d").date()
 
 
 def _last_notify_time(store) -> str:
@@ -842,6 +865,9 @@ def _write_meta(all_repos, kept, skipped, failures, rows, bots, ai_records,
         "repos_in_scope": len(kept),
         "skipped": skipped,
         "failures": failures,
+        # 成功抓取的仓库名。日报靠它判断"过去 24 小时内成功过没有" ——
+        # 补跑成功后提醒就该消失，只有失败记录是判断不出来的。
+        "succeeded": sorted(r.name for r in kept if r.name not in failures),
         "contributors": len(summarize(rows)),
         # bots.csv 是完整对照表，两类 bot 都在里面，故这里是「被标注的数量」
         "bots_flagged": len({r.login for r in bots}),

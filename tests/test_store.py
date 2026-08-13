@@ -465,3 +465,179 @@ def test_notify_only_run_does_not_break_streak(store):
     store.finish_run(rid, repos_processed=0)
     store.record_failures(rid, {"tiny": "又挂了"})
     assert store.consecutive_failures() == {"tiny": 2}
+
+
+# ---- 按窗口取事件（日报口径） ----
+
+
+def test_window_uses_ingest_time_not_event_time(store):
+    """窗口切的是入库时间，不是 git 时间。
+
+    这是日报口径的要害：本地攒两周才 push 的提交，author date 落在两周前，
+    按 git 时间切窗会让它永远进不了任何一天的日报。
+    """
+    rid = store.begin_run()
+    old = Event(kind="commit", repo="tiny", number=None, sha="old1",
+                title="两周前写的代码", url="https://x/c/old1",
+                author_login="alice",
+                event_time="2026-07-30T00:00:00Z", state=None)
+    store.upsert_events([old], rid)
+    store.finish_run(rid, repos_processed=1)
+
+    row = store.conn.execute(
+        "SELECT first_seen_at FROM events WHERE sha='old1'").fetchone()
+    seen = row["first_seen_at"]
+    # 用入库时刻左右各留一秒作窗口
+    got = store.pending_in_window(seen[:19], "2099-01-01T00:00:00+00:00")
+    assert [e.sha for e in got.new_events] == ["old1"], \
+        "按入库时间应取到；若按 event_time 切窗这条会永远漏掉"
+
+
+def test_window_excludes_outside_events(store):
+    rid = store.begin_run()
+    store.upsert_events([_commit(sha="in1")], rid)
+    store.finish_run(rid, repos_processed=1)
+    got = store.pending_in_window("2020-01-01T00:00:00+00:00",
+                                  "2020-01-02T00:00:00+00:00")
+    assert got.new_events == []
+
+
+def test_window_includes_state_changes(store):
+    """状态变更（PR 合并等）也要按窗口切，不能只管新事件。"""
+    rid = store.begin_run()
+    store.upsert_events([_pr(number=7, state="open")], rid)
+    store.finish_run(rid, repos_processed=1)
+    rid2 = store.begin_run()
+    store.upsert_events([_pr(number=7, state="merged")], rid2)
+    store.finish_run(rid2, repos_processed=1)
+
+    row = store.conn.execute(
+        "SELECT changed_at FROM event_state_changes LIMIT 1").fetchone()
+    got = store.pending_in_window(row["changed_at"][:19],
+                                  "2099-01-01T00:00:00+00:00")
+    assert len(got.state_changes) == 1
+    assert got.state_changes[0].new_state == "merged"
+
+
+# ---- 迁移 ----
+
+
+def test_migration_is_idempotent(store):
+    """跑第二次不重复回填、不报错。"""
+    rid = store.begin_run()
+    store.upsert_events([_commit(sha="m1")], rid)
+    store.finish_run(rid, repos_processed=1)
+    before = store.conn.execute(
+        "SELECT first_seen_at FROM events WHERE sha='m1'").fetchone()[0]
+    store.init_schema()
+    after = store.conn.execute(
+        "SELECT first_seen_at FROM events WHERE sha='m1'").fetchone()[0]
+    assert before == after
+
+
+def test_migration_backfills_from_run(store):
+    """旧行（first_seen_at 为空）从 runs.started_at 回填。"""
+    rid = store.begin_run()
+    store.upsert_events([_commit(sha="b1")], rid)
+    store.finish_run(rid, repos_processed=1)
+    store.conn.execute("UPDATE events SET first_seen_at=NULL")
+    store.conn.commit()
+    store.init_schema()
+    started = store.conn.execute(
+        "SELECT started_at FROM runs WHERE run_id=?", (rid,)).fetchone()[0]
+    filled = store.conn.execute(
+        "SELECT first_seen_at FROM events WHERE sha='b1'").fetchone()[0]
+    assert filled == started
+
+
+# ---- 数据缺失提醒的判定 ----
+
+
+def test_missing_cleared_by_success_in_window(store):
+    """窗口内补跑成功，提醒就该消失。"""
+    rid = store.begin_run()
+    store.finish_run(rid, repos_processed=0)
+    store.record_failures(rid, {"tiny": "挂了"})
+    rid2 = store.begin_run()
+    store.finish_run(rid2, repos_processed=1)
+    store.record_successes(rid2, ["tiny"])
+    assert store.repos_missing_since("2020-01-01T00:00:00+00:00") == {}
+
+
+def test_success_outside_window_does_not_clear(store):
+    """窗口外补跑不算数 —— 那些数据要等下一天的日报，今天仍是缺的。
+
+    若这里撤掉提醒，今天的日报既不提醒、也没有那个仓库的内容，
+    比不改还隐蔽。
+    """
+    rid = store.begin_run()
+    store.finish_run(rid, repos_processed=0)
+    store.record_failures(rid, {"tiny": "挂了"})
+    rid2 = store.begin_run()
+    store.finish_run(rid2, repos_processed=1)
+    store.record_successes(rid2, ["tiny"])
+    # 显式设定两个时刻，不依赖执行快慢（同一微秒内跑完是常事）
+    store.conn.execute(
+        "UPDATE repo_failures SET failed_at='2026-08-13T01:00:00+00:00'")
+    store.conn.execute(
+        "UPDATE repo_successes SET succeeded_at='2026-08-13T05:00:00+00:00'")
+    store.conn.commit()
+
+    # 窗口在失败之后、补跑成功之前就关了
+    assert store.repos_missing_since("2026-08-13T00:00:00+00:00",
+                                     "2026-08-13T02:00:00+00:00") \
+        == {"tiny": 1}
+
+
+# ---- 建库基线：只挡首次录入的历史积压 ----
+
+
+def test_baseline_blocks_bootstrap_backlog(store):
+    """首次建库那一万多条不该被当成当天动态推出去。"""
+    rid = store.begin_run()
+    store.upsert_events([_commit(sha=f"h{i}") for i in range(5)], rid)
+    store.finish_run(rid, repos_processed=1)
+    store.mark_notify_baseline()
+
+    got = store.pending_in_window("2020-01-01T00:00:00+00:00",
+                                  "2099-01-01T00:00:00+00:00")
+    assert got.new_events == [], "基线之前入库的一律不进日报"
+
+
+def test_events_after_baseline_still_shown(store):
+    """基线之后入库的照常进日报。"""
+    rid = store.begin_run()
+    store.upsert_events([_commit(sha="old")], rid)
+    store.finish_run(rid, repos_processed=1)
+    store.mark_notify_baseline()
+
+    rid2 = store.begin_run()
+    store.upsert_events([_commit(sha="new")], rid2)
+    store.finish_run(rid2, repos_processed=1)
+    # 内存库同一微秒内跑完，时间戳会撞在一起；显式拉开，模拟真实的先后
+    store.conn.execute(
+        "UPDATE events SET first_seen_at='2026-08-13T09:00:00+00:00' "
+        "WHERE sha='new'")
+    store.conn.commit()
+
+    got = store.pending_in_window("2020-01-01T00:00:00+00:00",
+                                  "2099-01-01T00:00:00+00:00")
+    assert [e.sha for e in got.new_events] == ["new"]
+
+
+def test_ordinary_push_does_not_become_baseline(store):
+    """普通推送不该成为下限 —— 否则同一天推两次内容会不一样。
+
+    这正是窗口锚定要保证的：同一天的日报，推几次都一样。
+    """
+    rid = store.begin_run()
+    store.upsert_events([_commit(sha="x1")], rid)
+    store.finish_run(rid, repos_processed=1)
+    store.mark_notified(rid, True)          # 普通推送成功
+
+    win = ("2020-01-01T00:00:00+00:00", "2099-01-01T00:00:00+00:00")
+    first = store.pending_in_window(*win)
+    second = store.pending_in_window(*win)
+    assert [e.sha for e in first.new_events] == ["x1"]
+    assert [e.sha for e in second.new_events] == ["x1"], \
+        "重复取同一窗口必须得到相同内容"
