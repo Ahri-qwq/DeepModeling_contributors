@@ -10,7 +10,7 @@ reviewed-by: 与 commenter: 搜索需逐用户发一次请求，约 100 位贡�
 """
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -21,6 +21,12 @@ GRAPHQL_URL = "https://api.github.com/graphql"
 QUOTA_FLOOR = 500  # 剩余低于此值时主动暂停
 # 分页上限防御。超出时打印警告而非静默截断（用户裁决）
 MAX_PAGES = 400
+# 分页早停的安全缓冲。判据是 createdAt，但老 PR 可能在窗口内才被合并
+# 或评论，所以要往 since 之前多翻一段。90 天是权衡：开着超过三个月才
+# 合并的 PR 极少，而这个余量已让 abacus-develop 从 306 次请求降到 63 次
+# （实测 PR 45 页 + Issue 18 页）。觉得漏判就调大，觉得慢就调小 ——
+# 只影响速度与漏判风险的取舍，不影响正确性。
+EARLY_STOP_BUFFER = timedelta(days=90)
 
 PR_QUERY = """
 query($owner:String!,$name:String!,$cursor:String) {
@@ -196,16 +202,54 @@ class GitHubGraphQL:
             self._sleep(60)
 
 
+def _oldest_created_at(nodes: list):
+    """返回本页最早的 createdAt。任一条解析不了就返回 None。
+
+    None 的语义是"不确定"，调用方据此选择继续翻页 —— 宁可多花请求
+    也不漏数据。
+    """
+    oldest = None
+    for n in nodes:
+        raw = (n or {}).get("createdAt", "")
+        if not raw:
+            return None
+        try:
+            t = _parse_iso(raw)
+        except ValueError:
+            return None
+        if oldest is None or t < oldest:
+            oldest = t
+    return oldest
+
+
 def _paginate(client: GitHubGraphQL, query: str, org: str, name: str,
-              root_key: str, log=print) -> list:
+              root_key: str, log=print, since=None) -> list:
+    """翻页取全部节点。传了 since 时在窗口外提前收手。
+
+    早停的依据：两个查询都按 CREATED_AT DESC 排序，一旦某页最早的一条
+    都早于窗口起点，后面只会更早。abacus-develop 实测 306 页里只有前
+    六十几页落在窗口（含缓冲）内，其余两百多页拉回来立刻被 _in_window 丢掉。
+
+    为什么要留 EARLY_STOP_BUFFER 而不是卡在 since 就停：判据是 createdAt，
+    而一个几个月前创建的 PR 完全可能在窗口内才被合并或评论，那些事件同样
+    要算。缓冲期就是为这种"老 PR 新动作"留的余量 —— 超过这个跨度还在
+    活跃的 PR 极少，用一点额外请求换不漏判。
+    """
+    cutoff = since - EARLY_STOP_BUFFER if since is not None else None
     nodes, cursor = [], None
     for _ in range(MAX_PAGES):
         data = client.query(query, {"owner": org, "name": name, "cursor": cursor})
         conn = ((data.get("repository") or {}).get(root_key) or {})
-        nodes.extend(conn.get("nodes") or [])
+        page = conn.get("nodes") or []
+        nodes.extend(page)
         info = conn.get("pageInfo") or {}
         if not info.get("hasNextPage"):
             return nodes
+        if cutoff is not None and page:
+            oldest = _oldest_created_at(page)
+            # oldest 为 None 表示有条目日期解析不了，此时不敢断言后面更早
+            if oldest is not None and oldest < cutoff:
+                return nodes
         cursor = info.get("endCursor")
         client.guard_quota(log)
     # 到这里说明翻页未终止。绝不静默截断，明确告知用户
@@ -222,8 +266,10 @@ def collect_api_stats(repo, cfg, client: GitHubGraphQL, cm) -> tuple:
         raw = json.loads(cache_file.read_text(encoding="utf-8"))
         pr_nodes, issue_nodes = raw.get("prs", []), raw.get("issues", [])
     else:
-        pr_nodes = _paginate(client, PR_QUERY, cfg.org, repo.name, "pullRequests")
-        issue_nodes = _paginate(client, ISSUE_QUERY, cfg.org, repo.name, "issues")
+        pr_nodes = _paginate(client, PR_QUERY, cfg.org, repo.name,
+                             "pullRequests", since=cfg.since)
+        issue_nodes = _paginate(client, ISSUE_QUERY, cfg.org, repo.name,
+                                "issues", since=cfg.since)
         if not cfg.no_fetch:
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(

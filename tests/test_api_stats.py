@@ -133,3 +133,110 @@ def test_client_tracks_remaining_quota():
     c.query("query{x}", {})
     assert c.remaining == 4200
     assert c.spent == 3
+
+
+# --- 分页窗口早停 ---
+#
+# 起因（2026-08-14）：abacus-develop 有 4945 个 PR + 2691 个 issue，
+# 按每页 25 条要连打 306 次 GraphQL 请求才翻到底。而查询按 CREATED_AT
+# DESC 排序，窗口（近一年）内的数据全在最前面几十页，后面两百多页拉回来
+# 的老数据立刻被 _in_window 丢掉 —— 纯属浪费，还把连续请求的时间拉长到
+# 网络抖动几乎必然命中，该仓库因此连挂三天。
+
+
+class _FakeClient:
+    """按预设页面回放的假客户端，记录实际请求了几页。"""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = 0
+        self.remaining = 5000
+
+    def query(self, query, variables):
+        page = self.pages[self.calls]
+        self.calls += 1
+        return {"repository": {"pullRequests": page}}
+
+    def guard_quota(self, log=print):
+        pass
+
+
+def _page(dates, has_next=True):
+    return {
+        "nodes": [{"createdAt": d} for d in dates],
+        "pageInfo": {"hasNextPage": has_next, "endCursor": "c"},
+    }
+
+
+def test_stops_once_page_falls_before_window():
+    """整页都早于 since - 缓冲期时停止翻页，不再往下拉老数据。"""
+    from contributors.api_stats import _paginate
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    client = _FakeClient([
+        _page(["2026-06-01T00:00:00Z", "2026-05-01T00:00:00Z"]),
+        _page(["2026-02-01T00:00:00Z", "2026-01-15T00:00:00Z"]),
+        _page(["2020-01-01T00:00:00Z", "2019-01-01T00:00:00Z"]),  # 远早于窗口
+        _page(["2018-01-01T00:00:00Z"]),                          # 不该请求到
+    ])
+    _paginate(client, "q", "org", "repo", "pullRequests", since=since)
+    assert client.calls == 3
+
+
+def test_keeps_going_within_buffer():
+    """刚早于 since 但还在缓冲期内的要继续翻。
+
+    理由：判据是 createdAt，而一个老 PR 可能在窗口内才被合并或评论。
+    卡在 since 就停会漏掉"老 PR 新合并"这类事件。
+    """
+    from contributors.api_stats import _paginate
+
+    since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    client = _FakeClient([
+        _page(["2026-07-01T00:00:00Z"]),
+        _page(["2026-05-01T00:00:00Z"]),   # 早于 since，但在 90 天缓冲内
+        _page(["2026-04-15T00:00:00Z"]),   # 仍在缓冲内
+        _page(["2025-01-01T00:00:00Z"], has_next=False),  # 远超缓冲，到此为止
+    ])
+    _paginate(client, "q", "org", "repo", "pullRequests", since=since)
+    assert client.calls == 4
+
+
+def test_no_since_means_no_early_stop():
+    """不传 since 时保持原行为，一路翻到底。"""
+    from contributors.api_stats import _paginate
+
+    client = _FakeClient([
+        _page(["2020-01-01T00:00:00Z"]),
+        _page(["2019-01-01T00:00:00Z"], has_next=False),
+    ])
+    _paginate(client, "q", "org", "repo", "pullRequests")
+    assert client.calls == 2
+
+
+def test_early_stop_keeps_nodes_it_already_read():
+    """早停不能丢掉已经读到的节点。"""
+    from contributors.api_stats import _paginate
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    client = _FakeClient([
+        _page(["2026-06-01T00:00:00Z"]),
+        _page(["2020-01-01T00:00:00Z"]),
+        _page(["2019-01-01T00:00:00Z"]),
+    ])
+    nodes = _paginate(client, "q", "org", "repo", "pullRequests", since=since)
+    assert [n["createdAt"] for n in nodes] == [
+        "2026-06-01T00:00:00Z", "2020-01-01T00:00:00Z"]
+
+
+def test_unparsable_date_does_not_stop_pagination():
+    """日期解析不了时继续翻，宁可多花请求也不漏数据。"""
+    from contributors.api_stats import _paginate
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    client = _FakeClient([
+        _page(["", "not-a-date"]),
+        _page(["2026-06-01T00:00:00Z"], has_next=False),
+    ])
+    _paginate(client, "q", "org", "repo", "pullRequests", since=since)
+    assert client.calls == 2
