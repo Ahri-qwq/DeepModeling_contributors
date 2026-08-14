@@ -8,7 +8,10 @@ data/
 __pycache__/
 *.pyc
 .venv/
+# 手动跑时重定向到根目录的调试日志。带序号的（fetch_run2.log）不匹配
+# *_run.log，所以再加一条宽的 —— 定时任务的日志在 logs/ 下，不受影响。
 *_run.log
+*_run[0-9].log
 .pytest_cache/
 # 每日任务日志：会持续累积，且内容可从事件库与输出目录复原
 logs/
