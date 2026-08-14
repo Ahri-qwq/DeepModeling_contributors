@@ -721,6 +721,58 @@ class TestChronicFailures:
         d = build(UpsertResult([_commit("a")], []), chronic_failures={})
         assert "连续抓取失败" not in card.render_text(d)
 
+
+class TestChronicFailureReasons:
+    """告警文案按失败原因分流。
+
+    2026-08-14 的真实教训：abacus-develop 连挂三次，文案写死"可能是改名、
+    删除或权限变更"，实际原因是 RemoteDisconnected（该仓库 PR+Issue 需
+    306 次连续 GraphQL 请求，中途被掐断）。仓库好好的，三个猜测全不成立。
+    """
+
+    def test_network_reason_does_not_blame_repo(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={"abacus-develop": 3},
+                  chronic_reasons={"abacus-develop": "network"})
+        text = card.render_text(d)
+        assert "连续抓取失败" in text
+        assert "网络" in text
+        # 关键：网络故障不该把人往"仓库出事了"的方向引
+        assert "改名" not in text and "删除" not in text
+
+    def test_permanent_reason_points_at_repo(self):
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={"gone": 3},
+                  chronic_reasons={"gone": "permanent"})
+        text = card.render_text(d)
+        assert "改名" in text or "删除" in text or "权限" in text
+
+    def test_unknown_reason_keeps_neutral_wording(self):
+        """认不出原因时既不甩锅网络也不甩锅仓库，只说去查。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={"x": 3},
+                  chronic_reasons={"x": "unknown"})
+        text = card.render_text(d)
+        assert "连续抓取失败" in text
+        assert "改名" not in text and "网络" not in text
+
+    def test_missing_reason_falls_back_to_neutral(self):
+        """没传 chronic_reasons 时不能崩，退化成中性文案。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={"x": 3})
+        text = card.render_text(d)
+        assert "连续抓取失败" in text
+
+    def test_mixed_reasons_are_grouped(self):
+        """网络类和永久类同时存在时分开说，不能混成一句。"""
+        d = build(UpsertResult([_commit("a")], []),
+                  chronic_failures={"neta": 3, "goneb": 4},
+                  chronic_reasons={"neta": "network", "goneb": "permanent"})
+        text = card.render_text(d)
+        assert "neta" in text and "goneb" in text
+        assert "网络" in text
+        assert "改名" in text or "删除" in text or "权限" in text
+
     def test_chronic_repo_not_duplicated_in_failed_line(self):
         """达阈值的仓库只出现在告警行，不在"未能抓取"里重复。"""
         d = build(UpsertResult([_commit("a")], []),

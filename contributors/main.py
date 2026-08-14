@@ -704,6 +704,8 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         missing = store.repos_missing_since(win_start, win_end)
         chronic = {n: c for n, c in store.consecutive_failures().items()
                    if c >= CHRONIC_FAILURE_THRESHOLD and n in missing}
+        # 告警文案按失败原因分流：网络故障和仓库消失要给不同的处置建议
+        chronic_reasons = store.last_failure_reasons()
 
         # 无增量时准备一句近期活动量。群里一天没消息，第一反应是脚本挂了，
         # 所以宁可发一条"昨日无更新 + 本周至今 N 次提交"。
@@ -727,6 +729,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             repos_total=meta.get("repos_in_scope"),
             failed_repos=sorted(n for n in missing if n not in chronic),
             chronic_failures=chronic,
+            chronic_reasons=chronic_reasons,
             recent_label=recent_label,
             recent_counts=recent_counts,
         )

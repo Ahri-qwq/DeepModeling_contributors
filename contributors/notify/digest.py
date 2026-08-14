@@ -55,6 +55,10 @@ class Digest:
     # 连续失败达到阈值的仓库：{仓库名: 连续次数}。与 failed_repos 分开渲染，
     # 因为语义不同 —— 那个是"今天没抓到、明天会补"，这个是"自愈机制救不了它"。
     chronic_failures: dict = field(default_factory=dict)
+    # 上述仓库最近一次失败的原因类别：{仓库名: network|permanent|unknown}。
+    # 单独一个字段而不是把类别塞进 chronic_failures，是为了不动那个字段的
+    # 结构 —— 存档的旧战报 JSON 仍能原样重发。缺失时文案退化为中性措辞。
+    chronic_reasons: dict = field(default_factory=dict)
     # 昨日无更新时贴的近期活动量。空标签表示三级回退都没找到数据。
     # 只存数字不存明细 —— 这是"证明系统在正常工作"的旁证，不是内容。
     recent_label: str = ""
@@ -132,6 +136,7 @@ def build(pending, last_notify_at: str = "",
           repos_total: Optional[int] = None,
           failed_repos: Optional[list] = None,
           chronic_failures: Optional[dict] = None,
+          chronic_reasons: Optional[dict] = None,
           recent_label: str = "",
           recent_counts: Optional[dict] = None,
           now: Optional[datetime] = None) -> Digest:
@@ -179,6 +184,9 @@ def build(pending, last_notify_at: str = "",
     d.repos_processed = repos_processed
     d.repos_total = repos_total
     d.chronic_failures = dict(chronic_failures or {})
+    # 只保留仍在告警中的仓库的原因，避免把已恢复仓库的历史错误带进卡片
+    d.chronic_reasons = {k: v for k, v in (chronic_reasons or {}).items()
+                         if k in d.chronic_failures}
     # 达到告警阈值的仓库只出现在告警行，不在"未能抓取"行里重复一遍
     d.failed_repos = [r for r in (failed_repos or [])
                       if r not in d.chronic_failures]

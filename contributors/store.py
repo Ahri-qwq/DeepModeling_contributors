@@ -19,6 +19,60 @@ from .events import Event, StateChange
 
 log = logging.getLogger(__name__)
 
+# 失败原因分类用的关键词。判定顺序是"先永久后网络"：一次请求可能
+# 既超时又返回 404，此时该按永久处理 —— 永久错误重试再多也没用。
+#
+# 为什么要分类：2026-08-14 abacus-develop 连挂三次触发告警，而告警文案
+# 写死"可能是改名、删除或权限变更"。实际原因是 RemoteDisconnected（该
+# 仓库 PR+Issue 需 306 次连续 GraphQL 请求，中途被掐断），仓库本身好好的。
+# 三个猜测一个都不中，把排查引向了错误方向。
+_PERMANENT_MARKERS = (
+    "could not resolve to a repository",
+    "not found",
+    "404",
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "repository access blocked",
+    "moved permanently",
+)
+_NETWORK_MARKERS = (
+    "connection aborted",
+    "remotedisconnected",
+    "connection reset",
+    "connection was reset",
+    "failed to connect",
+    "timed out",
+    "timeout",
+    "sslerror",
+    "ssleoferror",
+    "eof occurred",
+    "rpc failed",
+    "could not fetch",
+    "temporary failure in name resolution",
+    "connection refused",
+    "broken pipe",
+)
+
+
+def classify_failure(error: Optional[str]) -> str:
+    """把失败原因归成 network / permanent / unknown。
+
+    认不出来时返回 unknown 而不是硬猜 —— 猜错的提示比没有提示更误导，
+    这正是这个函数存在的理由。
+    """
+    if not error:
+        return "unknown"
+    low = error.lower()
+    # 永久优先：既超时又 404 时，重试救不了它
+    if any(m in low for m in _PERMANENT_MARKERS):
+        return "permanent"
+    if any(m in low for m in _NETWORK_MARKERS):
+        return "network"
+    return "unknown"
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,6 +440,18 @@ class EventStore:
                     break
             streaks[name] = n
         return streaks
+
+    def last_failure_reasons(self) -> dict:
+        """每个仓库最近一次失败的原因类别。返回 {仓库名: 类别}。
+
+        取最近那次而不是全历史投票：仓库的状态会变（网络抖了两天之后
+        真的被删了），当前状态只由最后一次说了算。
+        """
+        rows = self.conn.execute(
+            "SELECT repo, error FROM repo_failures f WHERE run_id = "
+            "(SELECT MAX(run_id) FROM repo_failures WHERE repo = f.repo)"
+        ).fetchall()
+        return {r["repo"]: classify_failure(r["error"]) for r in rows}
 
     # ---- 战报存档 ----
 

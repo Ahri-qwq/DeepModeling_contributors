@@ -143,8 +143,14 @@ def _failed_line(d: Digest) -> str:
 def _chronic_line(d: Digest) -> str:
     """连续多次抓取失败的仓库。与上面那行分开，因为这条要人去处理。
 
-    "累计到明天"对这些仓库不再成立：连挂三次说明多半不是网络抖动，
-    而是改名、删除或权限变更 —— 那种情况永远不会自愈，没人去看就一直挂着。
+    "累计到明天"对这些仓库不再成立：连挂三次说明自愈机制救不了它，
+    没人去看就一直挂着。
+
+    处置建议按失败原因分流，不写死猜测。2026-08-14 的教训：文案原本
+    写死"可能是改名、删除或权限变更"，而 abacus-develop 那次的真实原因
+    是 RemoteDisconnected（该仓库需 306 次连续 GraphQL 请求，中途被掐断），
+    仓库本身完全正常 —— 三个猜测一个都不中，反而把排查引向错误方向。
+    认不出原因时用中性措辞，宁可不给方向也不给错方向。
     """
     if not d.chronic_failures:
         return ""
@@ -152,9 +158,21 @@ def _chronic_line(d: Digest) -> str:
                    key=lambda kv: (-kv[1], kv[0]))[:MAX_FAILED]
     rest = len(d.chronic_failures) - len(items)
     tail = f"，还有 {rest} 个" if rest > 0 else ""
-    body = "、".join(f"{_escape(n)}（{c} 次）" for n, c in items)
-    return (f"⚠️ 连续抓取失败：{body}{tail}"
-            "，可能是改名、删除或权限变更，请检查")
+
+    groups = {}
+    for name, count in items:
+        cat = d.chronic_reasons.get(name, "unknown")
+        groups.setdefault(cat, []).append(f"{_escape(name)}（{count} 次）")
+
+    # 永久类排前面：那个才是真需要人动手的
+    parts = []
+    for cat, hint in (("permanent", "疑似改名、删除或权限变更，请检查仓库"),
+                      ("network", "均为网络错误，仓库多半正常，请检查网络或抓取时段"),
+                      ("unknown", "原因未能识别，请查日志")):
+        if cat in groups:
+            parts.append(f"{'、'.join(groups[cat])}，{hint}")
+    # tail 统一挂末尾：分成多组时挂在某一组后面会读成只有那组还有更多
+    return "⚠️ 连续抓取失败：" + "；".join(parts) + tail
 
 
 def _recent_line(d: Digest) -> str:

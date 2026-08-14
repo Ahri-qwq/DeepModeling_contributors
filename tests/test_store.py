@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from contributors.events import Event
-from contributors.store import EventStore
+from contributors.store import EventStore, classify_failure
 
 
 @pytest.fixture
@@ -465,6 +465,72 @@ def test_notify_only_run_does_not_break_streak(store):
     store.finish_run(rid, repos_processed=0)
     store.record_failures(rid, {"tiny": "又挂了"})
     assert store.consecutive_failures() == {"tiny": 2}
+
+
+# ---- 失败原因分类 ----
+
+
+class TestClassifyFailure:
+    """把失败原因分成"网络"与"永久"两类，日报据此给不同的处置建议。
+
+    2026-08-14 abacus-develop 连挂三次触发告警，文案写死"可能是改名、
+    删除或权限变更"，而实际是 RemoteDisconnected —— 三个猜测一个都不中，
+    反而把排查引向错误方向。
+    """
+
+    @pytest.mark.parametrize("err", [
+        "('Connection aborted.', RemoteDisconnected('Remote end closed "
+        "connection without response'))",
+        "git 失败：fatal: unable to access 'https://github.com/x/y.git/': "
+        "Failed to connect to github.com port 443 after 23210 ms",
+        "HTTPSConnectionPool(host='api.github.com', port=443): Read timed out.",
+        "SSLEOFError(8, 'EOF occurred in violation of protocol')",
+        "error: RPC failed; curl 28 Recv failure: Connection was reset",
+    ])
+    def test_network_errors(self, err):
+        assert classify_failure(err) == "network"
+
+    @pytest.mark.parametrize("err", [
+        "GraphQL 错误：Could not resolve to a Repository with the name "
+        "'deepmodeling/gone'.",
+        "404 Client Error: Not Found for url: https://api.github.com/repos/x/y",
+        "401 Client Error: Unauthorized",
+        "403 Client Error: Forbidden",
+        "fatal: repository 'https://github.com/x/y.git/' not found",
+    ])
+    def test_permanent_errors(self, err):
+        assert classify_failure(err) == "permanent"
+
+    def test_unknown_error_is_not_guessed(self):
+        """认不出来就返回 unknown，别硬猜 —— 猜错比不猜更误导。"""
+        assert classify_failure("某种没见过的错误") == "unknown"
+        assert classify_failure("") == "unknown"
+        assert classify_failure(None) == "unknown"
+
+
+class TestLastFailureReasons:
+    def test_returns_category_per_repo(self, store):
+        rid = store.begin_run()
+        store.finish_run(rid, repos_processed=38)
+        store.record_failures(rid, {
+            "abacus-develop": "('Connection aborted.', RemoteDisconnected())",
+            "gone-repo": "GraphQL 错误：Could not resolve to a Repository",
+        })
+        got = store.last_failure_reasons()
+        assert got == {"abacus-develop": "network", "gone-repo": "permanent"}
+
+    def test_uses_most_recent_error(self, store):
+        """同一仓库先网络错、后永久错，取最近那次 —— 它才反映当前状态。"""
+        first = store.begin_run()
+        store.finish_run(first, repos_processed=38)
+        store.record_failures(first, {"x": "Connection aborted"})
+        second = store.begin_run()
+        store.finish_run(second, repos_processed=38)
+        store.record_failures(second, {"x": "404 Client Error: Not Found"})
+        assert store.last_failure_reasons()["x"] == "permanent"
+
+    def test_empty_when_no_failures(self, store):
+        assert store.last_failure_reasons() == {}
 
 
 # ---- 按窗口取事件（日报口径） ----
