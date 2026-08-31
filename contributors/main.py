@@ -692,7 +692,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print("首次运行，已建库但不推送；下次运行起才有增量")
             return
 
-        # 按锚定窗口取内容：8-13 的日报恒为 8-12 10:00 ~ 8-13 10:00（东八区），
+        # 按锚定窗口取内容：8-13 的日报恒为 8-12 11:00 ~ 8-13 11:00（东八区），
         # 与实际推送时刻无关。补推、重跑抓取都不会改变已定日期的内容 ——
         # 窗口内补抓的自动进当天，窗口后补抓的自然进第二天。
         win_start, win_end = period.daily_range(_report_date(cfg))
@@ -700,7 +700,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         totals = _year_totals(rows)
 
         # 数据缺失提醒的判据是"这个窗口内成功过没有"，而不是"最后一次跑挂没挂"。
-        # 7 点失败、8 点补跑成功，10 点推送时就不该再提醒。
+        # 7 点失败、8 点补跑成功，11 点推送时就不该再提醒。
         missing = store.repos_missing_since(win_start, win_end)
         chronic = {n: c for n, c in store.consecutive_failures().items()
                    if c >= CHRONIC_FAILURE_THRESHOLD and n in missing}
@@ -718,7 +718,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             pending,
             last_notify_at=_last_notify_time(store),
             # 标题日期要跟着 --date 走：补推 8-14 的日报，标题不能写成
-            # 生成那天。窗口终点就是那天的 10:00，拿它当参考时刻正合适。
+            # 生成那天。窗口终点就是那天的 11:00，拿它当参考时刻正合适。
             now=datetime.fromisoformat(win_end),
             total_contributors=meta.get("contributors"),
             total_commits=totals["commits"],

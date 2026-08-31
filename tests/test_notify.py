@@ -390,7 +390,7 @@ class TestLoadEnv:
 class TestDailyHeadline:
     """固定每天跑时的文案：正常写"昨日社区动态"，异常时回退。
 
-    增量按"本次运行新看到的"判定，不是按事件时间。固定 10 点跑保证的是
+    增量按"本次运行新看到的"判定，不是按事件时间。固定 11 点跑保证的是
     运行时间固定，不保证内容都发生在昨天 —— 推送失败补推时，卡片里装的
     是两天的内容，此时再写"昨日"就是说谎。故按距上次成功推送的间隔切换。
     """
@@ -855,26 +855,26 @@ class TestTitleAnnouncesFailure:
 
 
 class TestDailyWindowAnchoring:
-    """日报窗口锚定当天 10:00（东八区），由日期决定，与推送时刻无关。
+    """日报窗口锚定当天 11:00（东八区），由日期决定，与推送时刻无关。
 
-    锚定的意义在于补推可复现：若按"此刻往前 24 小时"算，10 点推送失败、
-    11 点手动补推，昨天 10-11 点那一小时两个窗口都不覆盖，会永久漏掉。
+    锚定的意义在于补推可复现：若按"此刻往前 24 小时"算，11 点推送失败、
+    12 点手动补推，昨天 11-12 点那一小时两个窗口都不覆盖，会永久漏掉。
     """
 
-    def test_window_is_previous_day_10am_to_10am(self):
+    def test_window_is_previous_day_11am_to_11am(self):
         from datetime import date as _d
         start, end = period.daily_range(_d(2026, 8, 13))
-        # 东八区 10:00 = UTC 02:00
-        assert start == "2026-08-12T02:00:00+00:00"
-        assert end == "2026-08-13T02:00:00+00:00"
+        # 东八区 11:00 = UTC 03:00
+        assert start == "2026-08-12T03:00:00+00:00"
+        assert end == "2026-08-13T03:00:00+00:00"
 
     def test_window_independent_of_push_time(self):
         """同一天不论几点算，窗口都一样 —— 补推可复现的根据。"""
         from datetime import date as _d, datetime as _dt, timezone as _tz
         day = _d(2026, 8, 13)
-        at10 = period.daily_range(day, now=_dt(2026, 8, 13, 2, tzinfo=_tz.utc))
+        at11 = period.daily_range(day, now=_dt(2026, 8, 13, 3, tzinfo=_tz.utc))
         at23 = period.daily_range(day, now=_dt(2026, 8, 13, 15, tzinfo=_tz.utc))
-        assert at10 == at23
+        assert at11 == at23
 
     def test_consecutive_days_do_not_overlap_or_gap(self):
         """相邻两天首尾相接：不重不漏。"""
@@ -888,5 +888,5 @@ class TestDailyWindowAnchoring:
         # 东八区 8-13 09:00（UTC 8-13 01:00）时，"今天"是 8-13
         now = _dt(2026, 8, 13, 1, tzinfo=_tz.utc)
         start, end = period.daily_range(now=now)
-        assert end == "2026-08-13T02:00:00+00:00"
-        assert start == "2026-08-12T02:00:00+00:00"
+        assert end == "2026-08-13T03:00:00+00:00"
+        assert start == "2026-08-12T03:00:00+00:00"

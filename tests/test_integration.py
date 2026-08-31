@@ -91,8 +91,8 @@ def mk_repo(name="tiny"):
 def _tomorrow_cst() -> str:
     """明天（东八区）的日期串。
 
-    日报窗口锚定当天 10:00，"此刻"入库的测试数据多半落在今天窗口之外
-    （今天的窗口在今天 10:00 就关了）。指定明天的日报才能覆盖此刻。
+    日报窗口锚定当天 11:00，"此刻"入库的测试数据多半落在今天窗口之外
+    （今天的窗口在今天 11:00 就关了）。指定明天的日报才能覆盖此刻。
     """
     from contributors.notify.period import CST
     return (datetime.now(timezone.utc).astimezone(CST)
@@ -803,7 +803,7 @@ def test_only_notify_pushes_without_running_pipeline(tiny_repo, monkeypatch):
     s.finish_run(run, repos_processed=1)
     s.close()
 
-    # 事件是"此刻"入库的，而今天的窗口在今天 10:00 就关了。指定明天的日报
+    # 事件是"此刻"入库的，而今天的窗口在今天 11:00 就关了。指定明天的日报
     # 才能覆盖此刻 —— 这同时也验证了 --date 补推
     cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                   only_notify=True, events_db=cfg.events_db,
@@ -960,7 +960,7 @@ def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
     meta_path.write_text(_json.dumps(meta, ensure_ascii=False),
                          encoding="utf-8")
 
-    # 事件是"此刻"入库的，而今天的窗口在今天 10:00 就关了。指定明天的日报
+    # 事件是"此刻"入库的，而今天的窗口在今天 11:00 就关了。指定明天的日报
     # 才能覆盖此刻 —— 这同时也验证了 --date 补推
     cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                   only_notify=True, events_db=cfg.events_db,
