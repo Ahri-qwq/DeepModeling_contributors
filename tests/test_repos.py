@@ -145,6 +145,20 @@ def test_repos_whitelist_keeps_listed():
     assert should_skip(r, mk_cfg(repos=["dpdata"])) is None
 
 
+# --- 组织元仓库排除 ---
+
+def test_excluded_repo_is_skipped():
+    """.github 是 GitHub 组织元仓库，无真人贡献，始终排除。"""
+    r = mk_repo(name=".github")
+    assert should_skip(r, mk_cfg()) == "组织元仓库，已按 EXCLUDED_REPOS 排除"
+
+
+def test_excluded_repo_skipped_even_when_in_whitelist():
+    """即使显式 --repos .github，也应排除——防止污染榜单。"""
+    r = mk_repo(name=".github")
+    assert should_skip(r, mk_cfg(repos=[".github"])) == "组织元仓库，已按 EXCLUDED_REPOS 排除"
+
+
 # --- filter_repos 汇总 ---
 
 def test_filter_repos_returns_kept_and_reasons():

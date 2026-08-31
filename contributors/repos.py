@@ -26,6 +26,13 @@ SELF_ORGS = {
     "mzjb",
 }
 
+# 组织元仓库：GitHub 特殊用途、无真人贡献，不纳入统计
+# .github 存 profile README / issue 模板 / github-metrics bot 自动提交，
+# 排名靠前只会让外部读者困惑。
+EXCLUDED_REPOS = {
+    ".github",
+}
+
 # CI/流程工具类上游，按 full_name 精确匹配
 TOOLING_UPSTREAMS = {
     "platisd/clang-tidy-pr-comments",
@@ -61,6 +68,9 @@ def should_skip(repo: RepoInfo, cfg) -> Optional[str]:
     """返回跳过原因；不跳过返回 None。顺序即优先级。"""
     if cfg.repos and repo.name not in cfg.repos:
         return "不在 --repos 指定范围内"
+
+    if repo.name in EXCLUDED_REPOS:
+        return "组织元仓库，已按 EXCLUDED_REPOS 排除"
 
     if repo.is_fork:
         if cfg.include_forks == "none":
