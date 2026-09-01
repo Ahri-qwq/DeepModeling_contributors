@@ -88,15 +88,19 @@ def mk_repo(name="tiny"):
                     upstream=None, upstream_family=None, archived=False)
 
 
-def _tomorrow_cst() -> str:
-    """明天（东八区）的日期串。
+def _current_window_date_cst() -> str:
+    """当前时刻所属日报窗口的日期（东八区）。
 
-    日报窗口锚定当天 11:00，"此刻"入库的测试数据多半落在今天窗口之外
-    （今天的窗口在今天 11:00 就关了）。指定明天的日报才能覆盖此刻。
+    日报窗口锚定当天 20:00，"此刻"落在哪个窗口取决于当前时刻：
+    20:00 之前落在今天的窗口（daily_range(today)），
+    20:00 之后落在明天的窗口（daily_range(tomorrow)）。
+    不能写死钟点——基线时刻是"现在"，硬编码钟点在别的时段跑会失效。
     """
-    from contributors.notify.period import CST
-    return (datetime.now(timezone.utc).astimezone(CST)
-            + timedelta(days=1)).date().isoformat()
+    from contributors.notify.period import CST, DAILY_ANCHOR_HOUR
+    now_cst = datetime.now(timezone.utc).astimezone(CST)
+    if now_cst.hour < DAILY_ANCHOR_HOUR:
+        return now_cst.date().isoformat()
+    return (now_cst.date() + timedelta(days=1)).date().isoformat()
 
 
 def test_collects_commits_from_all_branches(tiny_repo):
@@ -763,8 +767,9 @@ def test_full_mode_still_writes_everything(tiny_repo, monkeypatch):
 
 # --- 拆分模式：抓取与推送分开跑 ---
 #
-# 用户要"10:30 抓、11:00 发"。抓取那步不推送，推送那步不重新抓取，
-# 但必须重新计算增量（否则等于重发存档，抓到的新数据不会进战报）。
+# 用户把两步拆成各自定时（如 18:00 抓、次日 10:03 发）。抓取那步不推送，
+# 推送那步不重新抓取，但必须重新计算增量（否则等于重发存档，抓到的新数据
+# 不会进战报）。
 
 def test_fetch_only_records_events_without_pushing(tiny_repo, monkeypatch):
     """--no-notify：跑统计、写事件库，但不推送。"""
@@ -803,11 +808,11 @@ def test_only_notify_pushes_without_running_pipeline(tiny_repo, monkeypatch):
     s.finish_run(run, repos_processed=1)
     s.close()
 
-    # 事件是"此刻"入库的，而今天的窗口在今天 11:00 就关了。指定明天的日报
-    # 才能覆盖此刻 —— 这同时也验证了 --date 补推
+    # 事件是"此刻"入库的。取当前窗口对应的日期，确保覆盖此刻 ——
+    # 这同时也验证了 --date 补推
     cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                   only_notify=True, events_db=cfg.events_db,
-                  date=_tomorrow_cst())
+                  date=_current_window_date_cst())
     sent = []
     monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
@@ -960,11 +965,11 @@ def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
     meta_path.write_text(_json.dumps(meta, ensure_ascii=False),
                          encoding="utf-8")
 
-    # 事件是"此刻"入库的，而今天的窗口在今天 11:00 就关了。指定明天的日报
-    # 才能覆盖此刻 —— 这同时也验证了 --date 补推
+    # 事件是"此刻"入库的。取当前窗口对应的日期，确保覆盖此刻 ——
+    # 这同时也验证了 --date 补推
     cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                   only_notify=True, events_db=cfg.events_db,
-                  date=_tomorrow_cst())
+                  date=_current_window_date_cst())
     sent = []
     monkeypatch.setattr(m.feishu, "send", lambda p: sent.append(p))
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
@@ -1129,7 +1134,7 @@ def test_chronic_failure_warned_after_threshold(tiny_repo, monkeypatch):
         cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                       notify_empty=True, repo_retries=1,
                       events_db=cfg.events_db, out_dir=cfg.out_dir,
-                      date=_tomorrow_cst())
+                      date=_current_window_date_cst())
         m.run(cfg2, token="fake")
 
     body = sent[-1]["card"]["elements"][0]["text"]["content"]
@@ -1177,7 +1182,8 @@ def test_same_date_pushed_twice_is_identical(tiny_repo, monkeypatch):
     for _ in range(2):
         cfg2 = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True,
                       notify_empty=True, only_notify=True,
-                      events_db=cfg.events_db, date=_tomorrow_cst())
+                      events_db=cfg.events_db,
+                      date=_current_window_date_cst())
         m.run(cfg2, token="fake")
 
     assert len(sent) == 2

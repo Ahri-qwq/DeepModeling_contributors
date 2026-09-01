@@ -855,26 +855,26 @@ class TestTitleAnnouncesFailure:
 
 
 class TestDailyWindowAnchoring:
-    """日报窗口锚定当天 11:00（东八区），由日期决定，与推送时刻无关。
+    """日报窗口锚定当天 20:00（东八区），由日期决定，与推送时刻无关。
 
-    锚定的意义在于补推可复现：若按"此刻往前 24 小时"算，11 点推送失败、
-    12 点手动补推，昨天 11-12 点那一小时两个窗口都不覆盖，会永久漏掉。
+    锚定的意义在于补推可复现：若按"此刻往前 24 小时"算，20 点推送失败、
+    21 点手动补推，昨天 20-21 点那一小时两个窗口都不覆盖，会永久漏掉。
     """
 
-    def test_window_is_previous_day_11am_to_11am(self):
+    def test_window_is_previous_day_8pm_to_8pm(self):
         from datetime import date as _d
         start, end = period.daily_range(_d(2026, 8, 13))
-        # 东八区 11:00 = UTC 03:00
-        assert start == "2026-08-12T03:00:00+00:00"
-        assert end == "2026-08-13T03:00:00+00:00"
+        # 东八区 20:00 = UTC 12:00
+        assert start == "2026-08-12T12:00:00+00:00"
+        assert end == "2026-08-13T12:00:00+00:00"
 
     def test_window_independent_of_push_time(self):
         """同一天不论几点算，窗口都一样 —— 补推可复现的根据。"""
         from datetime import date as _d, datetime as _dt, timezone as _tz
         day = _d(2026, 8, 13)
-        at11 = period.daily_range(day, now=_dt(2026, 8, 13, 3, tzinfo=_tz.utc))
+        at20 = period.daily_range(day, now=_dt(2026, 8, 13, 12, tzinfo=_tz.utc))
         at23 = period.daily_range(day, now=_dt(2026, 8, 13, 15, tzinfo=_tz.utc))
-        assert at11 == at23
+        assert at20 == at23
 
     def test_consecutive_days_do_not_overlap_or_gap(self):
         """相邻两天首尾相接：不重不漏。"""
@@ -888,5 +888,42 @@ class TestDailyWindowAnchoring:
         # 东八区 8-13 09:00（UTC 8-13 01:00）时，"今天"是 8-13
         now = _dt(2026, 8, 13, 1, tzinfo=_tz.utc)
         start, end = period.daily_range(now=now)
-        assert end == "2026-08-13T03:00:00+00:00"
-        assert start == "2026-08-12T03:00:00+00:00"
+        assert end == "2026-08-13T12:00:00+00:00"
+        assert start == "2026-08-12T12:00:00+00:00"
+
+
+class TestReportDate:
+    """_report_date：未指定 --date 时取昨天（东八区）；指定时返回该日期。
+
+    不能写死钟点——「现在」是浮动的，硬编码时刻在其他时段跑会失效。
+    只验证「昨天」而不验证具体数字，这样不论何时跑测试都成立。
+    """
+
+    def test_no_date_returns_yesterday_in_cst(self):
+        """未指定 --date 时，返回东八区的昨天日期。"""
+        from datetime import timezone as _tz, timedelta as _td
+        from contributors.main import _report_date
+        from contributors.config import Config
+        from contributors.notify.period import CST
+        import datetime as _dt_mod
+
+        cfg = Config(org="x", since=_dt_mod.datetime(2026, 1, 1, tzinfo=_tz.utc),
+                     until=_dt_mod.datetime(2026, 12, 31, tzinfo=_tz.utc),
+                     include_forks="all", max_repo_size=0)
+        result = _report_date(cfg)
+
+        expected = (_dt_mod.datetime.now(_tz.utc).astimezone(CST).date()
+                    - _td(days=1))
+        assert result == expected
+
+    def test_explicit_date_is_returned_as_is(self):
+        """--date 显式指定时原样返回，不受当前时刻影响。"""
+        from datetime import date as _d, timezone as _tz
+        from contributors.main import _report_date
+        from contributors.config import Config
+        import datetime as _dt_mod
+
+        cfg = Config(org="x", since=_dt_mod.datetime(2026, 1, 1, tzinfo=_tz.utc),
+                     until=_dt_mod.datetime(2026, 12, 31, tzinfo=_tz.utc),
+                     include_forks="all", max_repo_size=0, date="2026-08-14")
+        assert _report_date(cfg) == _d(2026, 8, 14)

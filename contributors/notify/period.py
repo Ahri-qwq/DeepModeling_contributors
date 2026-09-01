@@ -74,15 +74,15 @@ def last_month_range(now: Optional[datetime] = None) -> tuple:
 
 
 # 日报窗口的锚点小时（东八区）。窗口是"昨天这个点到今天这个点"。
-DAILY_ANCHOR_HOUR = 11
+DAILY_ANCHOR_HOUR = 20
 
 
 def daily_range(day: Optional[date] = None, hour: int = DAILY_ANCHOR_HOUR,
                 now: Optional[datetime] = None) -> tuple:
     """某日日报的窗口：前一天 hour 点到当天 hour 点（东八区），返回 UTC 半开区间。
 
-    锚定整点而不是"此刻往前 24 小时"，是为了让补推可复现：11 点推送失败、
-    12 点手动补推，若按"此刻往前 24 小时"算，昨天 11-12 点那一小时两个窗口
+    锚定整点而不是"此刻往前 24 小时"，是为了让补推可复现：20 点推送失败、
+    21 点手动补推，若按"此刻往前 24 小时"算，昨天 20-21 点那一小时两个窗口
     都不覆盖，会永久漏掉。锚定后 8-13 的日报永远是同一个区间，跑几次都一样。
 
     切的是**入库时间**（events.first_seen_at），不是 git 时间 —— 理由见
