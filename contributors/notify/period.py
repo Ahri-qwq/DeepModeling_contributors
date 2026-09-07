@@ -9,6 +9,7 @@
 
 不逐条列条目：一周几百条会把群消息刷屏，周月报的价值在趋势而非明细。
 """
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -74,15 +75,16 @@ def last_month_range(now: Optional[datetime] = None) -> tuple:
 
 
 # 日报窗口的锚点小时（东八区）。窗口是"昨天这个点到今天这个点"。
-DAILY_ANCHOR_HOUR = 20
+# hour=0 即整个自然日 0:00~24:00。
+DAILY_ANCHOR_HOUR = 0
 
 
 def daily_range(day: Optional[date] = None, hour: int = DAILY_ANCHOR_HOUR,
                 now: Optional[datetime] = None) -> tuple:
     """某日日报的窗口：前一天 hour 点到当天 hour 点（东八区），返回 UTC 半开区间。
 
-    锚定整点而不是"此刻往前 24 小时"，是为了让补推可复现：20 点推送失败、
-    21 点手动补推，若按"此刻往前 24 小时"算，昨天 20-21 点那一小时两个窗口
+    锚定整点而不是"此刻往前 24 小时"，是为了让补推可复现：0 点推送失败、
+    1 点手动补推，若按"此刻往前 24 小时"算，昨天 0-1 点那一小时两个窗口
     都不覆盖，会永久漏掉。锚定后 8-13 的日报永远是同一个区间，跑几次都一样。
 
     切的是**入库时间**（events.first_seen_at），不是 git 时间 —— 理由见
@@ -201,6 +203,11 @@ def render_text(d: PeriodDigest) -> str:
     if d.issue_count:
         parts.append(f"{d.issue_count} 个 issue")
     lines.append(" · ".join(parts) if parts else "无活动")
+
+    # 看板链接：环境变量未配置时静默跳过
+    dashboard_url = os.environ.get("DASHBOARD_URL", "")
+    if dashboard_url:
+        lines.append(f"[查看完整看板]({dashboard_url})")
 
     if d.contributor_total:
         lines.append(f"共 {d.contributor_total} 位贡献者参与")

@@ -4,6 +4,7 @@
 测试，网络那部分单独隔离在 feishu.py。
 """
 import json
+import os
 
 from .digest import MAX_ITEMS, Digest
 
@@ -13,19 +14,25 @@ SIZE_LIMIT = 18 * 1024
 
 
 def _line(item, kind: str) -> str:
-    """一行条目。标题做 markdown 转义，编号带链接，提交者缀在标题后。
+    """一个条目，仓库+编号占一行，标题+作者另起一行。
 
-    提交者拿到什么放什么（login / 姓名 / 邮箱皆可），拿不到就整个省略 ——
-    已删号用户的 author 为 null，写"未知"只是噪音。
+    PR/issue 格式：
+      · repo #N
+        标题 @author
+    commit 格式（无编号）：
+      · [repo](url) 或 · repo
+        标题 @author
+
+    两行格式让标题不再跟编号挤在一起，长标题时尤其可读。
+    提交者拿到什么放什么，拿不到就省略——已删号用户 author 为 null。
     """
     title = _escape(item.title) or "(无标题)"
     who = f" @{_escape(item.author)}" if getattr(item, "author", "") else ""
     if item.number is None:
-        # commit 没有编号，但有 URL，链接挂在仓库名上仍可点开
-        if item.url:
-            return f"· [{item.repo}]({item.url}) {title}{who}"
-        return f"· {item.repo} {title}{who}"
-    return f"· [{item.repo} #{item.number}]({item.url}) {title}{who}"
+        # commit 无编号，链接挂仓库名
+        ref = f"[{item.repo}]({item.url})" if item.url else item.repo
+        return f"· {ref}\n　{title}{who}"
+    return f"· [{item.repo} #{item.number}]({item.url})\n　{title}{who}"
 
 
 def _escape(text: str) -> str:
@@ -203,7 +210,11 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
                         or d.opened_prs or d.issues)
     if no_increment:
         # 无更新也要发：不发的话群里第一反应是脚本挂了
-        lines = [_headline(d), "昨日无更新", "", _recent_line(d)]
+        lines = [_headline(d), "昨日无更新"]
+        dashboard_url = os.environ.get("DASHBOARD_URL", "")
+        if dashboard_url:
+            lines.append(f"[查看完整看板]({dashboard_url})")
+        lines += ["", _recent_line(d)]
         totals = _totals_line(d)
         if totals:
             lines.append("")
@@ -217,6 +228,11 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
         return "\n".join(lines)
 
     lines = [_headline(d), _summary_line(d)]
+
+    # 看板链接：环境变量未配置时静默跳过，不影响本地跑和 dry-run
+    dashboard_url = os.environ.get("DASHBOARD_URL", "")
+    if dashboard_url:
+        lines.append(f"[查看完整看板]({dashboard_url})")
 
     for title, items in (("合并的 PR", d.merged_prs),
                          ("新建的 PR", d.opened_prs),

@@ -55,10 +55,17 @@ class TestAuthorDisplay:
         assert "@carol" in card.render_text(d)
 
     def test_author_follows_title(self):
-        """提交者放标题后面（用户明确要求）。"""
+        """提交者放标题后面（用户明确要求）。
+
+        新格式：仓库+编号占一行，标题+作者另起一行——作者仍在标题之后。
+        """
         d = build(UpsertResult([_pr(1, "open", title="修复某问题")], []))
-        line = [l for l in card.render_text(d).splitlines() if "#1" in l][0]
-        assert line.index("修复某问题") < line.index("@alice")
+        lines = card.render_text(d).splitlines()
+        ref_idx = next(i for i, l in enumerate(lines) if "#1" in l)
+        # 标题和作者在编号行的下一行
+        detail = lines[ref_idx + 1]
+        assert "修复某问题" in detail
+        assert detail.index("修复某问题") < detail.index("@alice")
 
     def test_missing_author_renders_nothing(self):
         """已删号用户 author 为 null，留空而不是写"未知"。"""
@@ -855,26 +862,26 @@ class TestTitleAnnouncesFailure:
 
 
 class TestDailyWindowAnchoring:
-    """日报窗口锚定当天 20:00（东八区），由日期决定，与推送时刻无关。
+    """日报窗口锚定当天 0:00~24:00（东八区整个自然日），由日期决定，与推送时刻无关。
 
-    锚定的意义在于补推可复现：若按"此刻往前 24 小时"算，20 点推送失败、
-    21 点手动补推，昨天 20-21 点那一小时两个窗口都不覆盖，会永久漏掉。
+    锚定的意义在于补推可复现：若按"此刻往前 24 小时"算，0 点推送失败、
+    1 点手动补推，昨天 0-1 点那一小时两个窗口都不覆盖，会永久漏掉。
     """
 
-    def test_window_is_previous_day_8pm_to_8pm(self):
+    def test_window_is_previous_midnight_to_midnight(self):
         from datetime import date as _d
         start, end = period.daily_range(_d(2026, 8, 13))
-        # 东八区 20:00 = UTC 12:00
-        assert start == "2026-08-12T12:00:00+00:00"
-        assert end == "2026-08-13T12:00:00+00:00"
+        # 东八区 0:00 = UTC 前一天 16:00
+        assert start == "2026-08-11T16:00:00+00:00"
+        assert end == "2026-08-12T16:00:00+00:00"
 
     def test_window_independent_of_push_time(self):
         """同一天不论几点算，窗口都一样 —— 补推可复现的根据。"""
         from datetime import date as _d, datetime as _dt, timezone as _tz
         day = _d(2026, 8, 13)
-        at20 = period.daily_range(day, now=_dt(2026, 8, 13, 12, tzinfo=_tz.utc))
-        at23 = period.daily_range(day, now=_dt(2026, 8, 13, 15, tzinfo=_tz.utc))
-        assert at20 == at23
+        morning = period.daily_range(day, now=_dt(2026, 8, 13, 1, tzinfo=_tz.utc))
+        evening = period.daily_range(day, now=_dt(2026, 8, 13, 23, tzinfo=_tz.utc))
+        assert morning == evening
 
     def test_consecutive_days_do_not_overlap_or_gap(self):
         """相邻两天首尾相接：不重不漏。"""
@@ -888,8 +895,8 @@ class TestDailyWindowAnchoring:
         # 东八区 8-13 09:00（UTC 8-13 01:00）时，"今天"是 8-13
         now = _dt(2026, 8, 13, 1, tzinfo=_tz.utc)
         start, end = period.daily_range(now=now)
-        assert end == "2026-08-13T12:00:00+00:00"
-        assert start == "2026-08-12T12:00:00+00:00"
+        assert end == "2026-08-12T16:00:00+00:00"
+        assert start == "2026-08-11T16:00:00+00:00"
 
 
 class TestReportDate:
