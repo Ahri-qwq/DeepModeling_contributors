@@ -614,6 +614,11 @@ def _notify_period(cfg) -> int:
             print(f"{label}无活动，跳过推送（--notify-empty 可改变）")
             return 0
 
+        # 先加载 .env 再渲染：period.render_text 读 DASHBOARD_URL 决定是否
+        # 渲染看板链接。load_env 不覆盖已有变量（只补缺），提前调用安全。
+        # 与日报路径同理：之前 load_env 在 render_period 之后，周月报卡片的
+        # 看板链接在干净环境下永不渲染。
+        feishu.load_env()
         payload = period.render_period(d)
         if cfg.notify_dry_run:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -621,7 +626,6 @@ def _notify_period(cfg) -> int:
 
         # 周月报不参与日报的增量基线：它只是换个视角看同一批事件，
         # 推送与否不该影响"上次成功推送"，否则会打乱日报的增量判定。
-        feishu.load_env()
         try:
             feishu.send(payload)
             print(f"已推送{label}报到飞书群")
@@ -692,15 +696,15 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print("首次运行，已建库但不推送；下次运行起才有增量")
             return
 
-        # 按锚定窗口取内容：8-13 的日报恒为 8-12 20:00 ~ 8-13 20:00（东八区），
-        # 与实际推送时刻无关。补推、重跑抓取都不会改变已定日期的内容 ——
-        # 窗口内补抓的自动进当天，窗口后补抓的自然进第二天。
+        # 按锚定窗口取内容：8-13 的日报恒为 8-13 0:00 ~ 8-13 24:00（东八区，
+        # 即完整自然日），与实际推送时刻无关。补推、重跑抓取都不会改变已定
+        # 日期的内容 —— 窗口内补抓的自动进当天，窗口后补抓的自然进第二天。
         win_start, win_end = period.daily_range(_report_date(cfg))
         pending = store.pending_in_window(win_start, win_end)
         totals = _year_totals(rows)
 
         # 数据缺失提醒的判据是"这个窗口内成功过没有"，而不是"最后一次跑挂没挂"。
-        # 16 点失败、17 点补跑成功，20 点推送时就不该再提醒。
+        # 16 点失败、17 点补跑成功，推送时就不该再提醒。
         missing = store.repos_missing_since(win_start, win_end)
         chronic = {n: c for n, c in store.consecutive_failures().items()
                    if c >= CHRONIC_FAILURE_THRESHOLD and n in missing}
@@ -718,7 +722,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             pending,
             last_notify_at=_last_notify_time(store),
             # 标题日期要跟着 --date 走：补推 8-14 的日报，标题不能写成
-            # 生成那天。窗口终点就是那天的 20:00，拿它当参考时刻正合适。
+            # 生成那天。窗口终点就是那天的 24:00，拿它当参考时刻正合适。
             now=datetime.fromisoformat(win_end),
             total_contributors=meta.get("contributors"),
             total_commits=totals["commits"],
@@ -739,6 +743,11 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print("无新增内容，跳过推送（--notify-empty 可改变）")
             return
 
+        # 先加载 .env 再渲染：card.render 读 DASHBOARD_URL 决定要不要渲染
+        # 看板按钮。load_env 不覆盖已有变量（只补缺），所以提前调用安全。
+        # 之前 load_env 在 card.render 之后，导致渲染按钮时 DASHBOARD_URL
+        # 还没读进环境变量，服务器干净环境下按钮永不渲染。
+        feishu.load_env()
         payload = card.render(d)
         if cfg.notify_dry_run:
             # dry-run 也存档：这样调通道时不必等真实增量，可以直接重发
@@ -747,7 +756,6 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             return
 
         digest_id = store.save_digest(run_id, payload, sent=None)
-        feishu.load_env()
         try:
             feishu.send(payload)
             store.mark_notified(run_id, True)
@@ -768,10 +776,11 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 def _report_date(cfg):
     """--date 指定的日报日期；未指定时取昨天（东八区）。
 
-    取昨天而非今天：锚点在 20:00，今天的窗口要到今晚 20:00 才关闭，
-    早上推会推到一个尚未闭合、且必然为空的区间 —— 昨晚 18:00 抓的那批
-    落在昨天的窗口里。取昨天后，同一自然日内任意时刻推送内容都一致，
-    过了午夜 0 点才翻到下一天。
+    取昨天而非今天：锚点在 0 点（整个自然日），今天的窗口要到今晚 24:00
+    才关闭，此刻推会推到一个尚未闭合的区间。取昨天则该窗口早已闭合，
+    完整覆盖了昨晚 18:00 抓取的那一批（18:00~24:00 那 6 小时的数据要等到
+    次日 18:00 才抓到，天然落进"昨天"的窗口里，不会漏，但也不会精确到
+    发生的当天——这是本方案接受的取舍）。
     """
     raw = getattr(cfg, "date", None)
     if not raw:
