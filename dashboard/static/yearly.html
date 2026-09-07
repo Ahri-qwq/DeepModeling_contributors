@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepModeling 年度排行</title>
+<style>
+  :root {
+    --bg: #eef0f8;
+    --panel: #ffffff;
+    --border: #e1e3f2;
+    --text: #1e2033;
+    --muted: #6b6f8a;
+    --accent: #4f5fd9;
+    --accent-dark: #3f4bc4;
+    --accent-light: #e4e7fb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    background-image: radial-gradient(at top left, #f4f5ff 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  nav a {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--accent-dark); text-decoration: none; font-size: 14px; font-weight: 600;
+    padding: 8px 16px; border-radius: 8px;
+    background: var(--accent-light); border: 1px solid #d7dafa;
+  }
+  nav a:hover { background: #e0e4fb; }
+  .caveat { font-size: 13px; color: var(--muted); margin-bottom: 32px; }
+
+  .panel {
+    background: radial-gradient(circle farthest-corner at 100% 0%, var(--accent-light) 0%, transparent 100%), var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(31,34,80,0.04);
+    padding: 24px;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--accent-dark); }
+  th.num, td.num { text-align: right; }
+  td.login a { color: var(--text); text-decoration: none; }
+  td.login a:hover { color: var(--accent-dark); }
+  tr:hover td { background: var(--accent-light); }
+
+  .search { margin-bottom: 16px; }
+  .search input {
+    width: 100%; max-width: 280px;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font-size: 13px;
+  }
+
+  .empty, .loading { color: var(--muted); font-size: 13px; padding: 24px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>DeepModeling 年度排行</h1>
+    <nav><a href="/">← 返回看板</a></nav>
+  </header>
+  <div class="caveat">数据范围：过去一年 · 每日重算 · 含 commit 作者（主页面的贡献者排行不含 commit，见首页说明）</div>
+
+  <div class="panel">
+    <div class="search">
+      <input type="text" id="searchInput" placeholder="搜索用户名…">
+    </div>
+
+    <div id="tableWrap"><div class="loading">加载中…</div></div>
+  </div>
+</div>
+
+<script>
+let rows = [];
+let sortKey = "commits";
+let sortDir = -1;
+
+const COLUMNS = [
+  { key: "login", label: "贡献者" },
+  { key: "commits", label: "Commits", num: true },
+  { key: "pr_created", label: "PR 新建", num: true },
+  { key: "pr_merged", label: "PR 合并", num: true },
+  { key: "pr_reviewed", label: "PR 评审", num: true },
+  { key: "issue_created", label: "Issue", num: true },
+];
+
+function render() {
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  let filtered = rows;
+  if (q) {
+    filtered = rows.filter(r =>
+      (r.login || "").toLowerCase().includes(q) || (r.name || "").toLowerCase().includes(q));
+  }
+  filtered = [...filtered].sort((a, b) => {
+    const av = sortKey === "login" ? (a.login || "") : Number(a[sortKey] || 0);
+    const bv = sortKey === "login" ? (b.login || "") : Number(b[sortKey] || 0);
+    if (av < bv) return -1 * sortDir;
+    if (av > bv) return 1 * sortDir;
+    return 0;
+  });
+
+  if (!filtered.length) {
+    document.getElementById("tableWrap").innerHTML = '<div class="empty">没有匹配的贡献者</div>';
+    return;
+  }
+
+  const thead = COLUMNS.map(c => {
+    const active = c.key === sortKey ? (sortDir === 1 ? " ▲" : " ▼") : "";
+    return `<th class="${c.num ? 'num' : ''}" data-key="${c.key}">${c.label}${active}</th>`;
+  }).join("");
+
+  const tbody = filtered.map(r => {
+    const login = r.login
+      ? `<a href="${r.github_url}" target="_blank" rel="noopener">${r.login}</a>`
+      : (r.name || "(匿名)");
+    return `<tr>
+      <td class="login">${login}</td>
+      <td class="num">${r.commits || 0}</td>
+      <td class="num">${r.pr_created || 0}</td>
+      <td class="num">${r.pr_merged || 0}</td>
+      <td class="num">${r.pr_reviewed || 0}</td>
+      <td class="num">${r.issue_created || 0}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("tableWrap").innerHTML =
+    `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
+
+  document.querySelectorAll("th[data-key]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      if (sortKey === key) sortDir *= -1;
+      else { sortKey = key; sortDir = key === "login" ? 1 : -1; }
+      render();
+    });
+  });
+}
+
+async function load() {
+  try {
+    const res = await fetch("/api/yearly");
+    if (!res.ok) throw new Error(`请求失败：${res.status}`);
+    rows = await res.json();
+    render();
+  } catch (e) {
+    document.getElementById("tableWrap").innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
+  }
+}
+
+document.getElementById("searchInput").addEventListener("input", render);
+load();
+</script>
+</body>
+</html>

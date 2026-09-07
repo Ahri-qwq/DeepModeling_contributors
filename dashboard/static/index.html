@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepModeling 社区看板</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #eef0f8;
+    --panel: #ffffff;
+    --border: #e1e3f2;
+    --text: #1e2033;
+    --muted: #6b6f8a;
+    --accent: #4f5fd9;
+    --accent-dark: #3f4bc4;
+    --accent-light: #e4e7fb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    background-image: radial-gradient(at top left, #f4f5ff 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  nav a {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600;
+    padding: 8px 16px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+    box-shadow: 0 2px 8px rgba(79,95,217,0.28);
+    border: none;
+  }
+  nav a:hover { box-shadow: 0 3px 12px rgba(79,95,217,0.4); }
+
+  .range-bar { display: flex; gap: 8px; margin-bottom: 40px; flex-wrap: wrap; align-items: center; }
+  .range-bar button {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .range-bar button.active {
+    border-color: transparent;
+    color: #ffffff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+  }
+  .range-bar input[type=date] {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--panel);
+  }
+  .range-bar .sep { color: var(--muted); font-size: 13px; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 48px; }
+  .kpi {
+    padding: 18px 20px;
+    background: radial-gradient(circle farthest-corner at 100% 0%, var(--accent-light) 0%, transparent 100%), var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(31,34,80,0.04);
+  }
+  .kpi .num { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; color: var(--accent-dark); }
+  .kpi .label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  section { margin-bottom: 32px; }
+  .panel {
+    background: radial-gradient(circle farthest-corner at 100% 0%, var(--accent-light) 0%, transparent 100%), var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(31,34,80,0.04);
+    padding: 24px;
+  }
+  section h2 { font-size: 15px; font-weight: 600; margin: 0 0 16px; color: var(--text); }
+  section h2 .hint { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 8px; }
+
+  .chart-box { position: relative; height: 280px; }
+
+  .repo-list { display: flex; flex-direction: column; gap: 10px; }
+  .repo-row { display: grid; grid-template-columns: 140px 1fr 60px; align-items: center; gap: 12px; font-size: 13px; }
+  .repo-row .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo-row .bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; display: flex; }
+  .repo-row .bar span { display: block; height: 100%; }
+  .repo-row .total { text-align: right; color: var(--muted); }
+
+  .rank-list { display: flex; flex-direction: column; gap: 8px; }
+  .rank-row { display: flex; justify-content: space-between; font-size: 14px; padding: 4px 0; }
+  .rank-row .login { color: var(--text); }
+  .rank-row .count { color: var(--muted); }
+
+  .stream { display: none; flex-direction: column; gap: 12px; margin-top: 16px; }
+  .stream.open { display: flex; }
+  .stream-item { font-size: 13px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .stream-item a { color: var(--accent-dark); text-decoration: none; }
+  .stream-item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .toggle-link { font-size: 13px; color: var(--accent-dark); cursor: pointer; user-select: none; }
+
+  .empty, .loading { color: var(--muted); font-size: 13px; padding: 24px 0; }
+  .caveat { font-size: 12px; color: var(--muted); margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>DeepModeling 社区看板</h1>
+    <nav><a href="/yearly">年度排行 →</a></nav>
+  </header>
+
+  <div class="range-bar" id="rangeBar">
+    <button data-days="7">7 天</button>
+    <button data-days="30" class="active">30 天</button>
+    <button data-days="90">3 个月</button>
+    <button data-days="180">半年</button>
+    <span class="sep">|</span>
+    <input type="date" id="fromInput">
+    <span class="sep">~</span>
+    <input type="date" id="toInput">
+  </div>
+
+  <div class="kpis" id="kpis">
+    <div class="loading">加载中…</div>
+  </div>
+
+  <section>
+    <div class="panel">
+      <h2>活动热力 <span class="hint">按天事件数</span></h2>
+      <div class="chart-box"><canvas id="timelineChart"></canvas></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="panel">
+      <h2>仓库活跃度</h2>
+      <div class="repo-list" id="repoList"><div class="loading">加载中…</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="panel">
+      <h2>贡献者排行 <span class="hint">基于 PR/Issue，commit 作者未记录，见「年度排行」</span></h2>
+      <div class="rank-list" id="rankList"><div class="loading">加载中…</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="panel">
+      <h2>
+        事件流
+        <span class="toggle-link" id="streamToggle">展开最近事件 ↓</span>
+      </h2>
+      <div class="stream" id="stream"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const KIND_LABEL = { commit: "提交", pr: "PR", issue: "Issue" };
+const KIND_COLOR = { commit: "#b7bdf2", pr: "#4f5fd9", issue: "#f0994f" };
+
+let range = { days: "30", from: null, to: null };
+let timelineChart = null;
+
+function qs(params) {
+  const p = new URLSearchParams();
+  if (range.from && range.to) { p.set("from", range.from); p.set("to", range.to); }
+  else { p.set("days", range.days); }
+  for (const [k, v] of Object.entries(params || {})) if (v) p.set(k, v);
+  return p.toString();
+}
+
+async function fetchJson(path, params) {
+  const res = await fetch(`${path}?${qs(params)}`);
+  if (!res.ok) throw new Error(`${path} 请求失败：${res.status}`);
+  return res.json();
+}
+
+function fmtNum(n) { return n == null ? "—" : n.toLocaleString("zh-CN"); }
+
+function renderKpis(s) {
+  const rate = s.pr_merge_rate == null ? "—" : `${Math.round(s.pr_merge_rate * 100)}%`;
+  document.getElementById("kpis").innerHTML = `
+    <div class="kpi"><div class="num">${fmtNum(s.total_events)}</div><div class="label">总事件数</div></div>
+    <div class="kpi"><div class="num">${fmtNum(s.active_contributors)}</div><div class="label">活跃贡献者（PR/Issue）</div></div>
+    <div class="kpi"><div class="num">${rate}</div><div class="label">PR 合并率</div></div>
+    <div class="kpi"><div class="num">${fmtNum(s.active_repos)}</div><div class="label">活跃仓库数</div></div>
+  `;
+}
+
+function renderTimeline(rows) {
+  const labels = rows.map(r => r.date);
+  const data = rows.map(r => r.count);
+  const ctx = document.getElementById("timelineChart").getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, 0, 260);
+  gradient.addColorStop(0, "#4f5fd9");
+  gradient.addColorStop(1, "#9aa3ec");
+  if (timelineChart) timelineChart.destroy();
+  timelineChart = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets: [{ data, backgroundColor: gradient, borderRadius: 3, barPercentage: 0.7 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, color: "#6b6f8a", font: { size: 11 } } },
+        y: { grid: { color: "#eef0f8" }, ticks: { color: "#6b6f8a", font: { size: 11 } } },
+      },
+    },
+  });
+}
+
+function renderRepos(rows) {
+  const el = document.getElementById("repoList");
+  if (!rows.length) { el.innerHTML = '<div class="empty">这段时间没有数据</div>'; return; }
+  const top = rows.slice(0, 12);
+  const max = Math.max(...top.map(r => r.commit + r.pr + r.issue));
+  el.innerHTML = top.map(r => {
+    const total = r.commit + r.pr + r.issue;
+    const w = (kind) => max ? (r[kind] / max * 100) : 0;
+    return `
+      <div class="repo-row">
+        <div class="name" title="${r.repo}">${r.repo}</div>
+        <div class="bar">
+          <span style="width:${w('commit')}%;background:${KIND_COLOR.commit}"></span>
+          <span style="width:${w('pr')}%;background:${KIND_COLOR.pr}"></span>
+          <span style="width:${w('issue')}%;background:${KIND_COLOR.issue}"></span>
+        </div>
+        <div class="total">${total}</div>
+      </div>`;
+  }).join("");
+}
+
+function renderRanking(rows) {
+  const el = document.getElementById("rankList");
+  if (!rows.length) { el.innerHTML = '<div class="empty">这段时间没有 PR/Issue 作者记录</div>'; return; }
+  el.innerHTML = rows.map((r, i) => `
+    <div class="rank-row">
+      <span class="login">${i + 1}. ${r.login}</span>
+      <span class="count">${r.count} 次</span>
+    </div>`).join("");
+}
+
+function renderStream(rows) {
+  const el = document.getElementById("stream");
+  if (!rows.length) { el.innerHTML = '<div class="empty">这段时间没有事件</div>'; return; }
+  el.innerHTML = rows.map(ev => {
+    const who = ev.author_login ? ` @${ev.author_login}` : "";
+    const label = KIND_LABEL[ev.kind] || ev.kind;
+    const numTxt = ev.number != null ? ` #${ev.number}` : "";
+    return `
+      <div class="stream-item">
+        <a href="${ev.url}" target="_blank" rel="noopener">${ev.repo}${numTxt}</a> ${ev.title}${who}
+        <div class="meta">${label} · ${ev.event_time}</div>
+      </div>`;
+  }).join("");
+}
+
+async function loadAll() {
+  document.getElementById("kpis").innerHTML = '<div class="loading">加载中…</div>';
+  try {
+    const [s, repos, ranking, tl, stream] = await Promise.all([
+      fetchJson("/api/summary"),
+      fetchJson("/api/repos"),
+      fetchJson("/api/contributors", { limit: 10 }),
+      fetchJson("/api/timeline"),
+      fetchJson("/api/events", { limit: 20 }),
+    ]);
+    renderKpis(s);
+    renderTimeline(tl);
+    renderRepos(repos);
+    renderRanking(ranking);
+    renderStream(stream);
+  } catch (e) {
+    document.getElementById("kpis").innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
+  }
+}
+
+document.getElementById("rangeBar").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-days]");
+  if (!btn) return;
+  range = { days: btn.dataset.days, from: null, to: null };
+  document.getElementById("fromInput").value = "";
+  document.getElementById("toInput").value = "";
+  document.querySelectorAll("#rangeBar button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  loadAll();
+});
+
+function applyCustomRange() {
+  const from = document.getElementById("fromInput").value;
+  const to = document.getElementById("toInput").value;
+  if (!from || !to) return;
+  range = { days: null, from, to };
+  document.querySelectorAll("#rangeBar button").forEach(b => b.classList.remove("active"));
+  loadAll();
+}
+document.getElementById("fromInput").addEventListener("change", applyCustomRange);
+document.getElementById("toInput").addEventListener("change", applyCustomRange);
+
+document.getElementById("streamToggle").addEventListener("click", () => {
+  const el = document.getElementById("stream");
+  const open = el.classList.toggle("open");
+  document.getElementById("streamToggle").textContent = open ? "收起 ↑" : "展开最近事件 ↓";
+});
+
+// URL 参数 ?days=N 支持日报卡片按钮直接指定初始范围
+(function initFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const days = p.get("days");
+  if (days) {
+    range = { days, from: null, to: null };
+    document.querySelectorAll("#rangeBar button").forEach(b => {
+      b.classList.toggle("active", b.dataset.days === days);
+    });
+  }
+})();
+
+loadAll();
+</script>
+</body>
+</html>
