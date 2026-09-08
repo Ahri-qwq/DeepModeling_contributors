@@ -696,9 +696,9 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print("首次运行，已建库但不推送；下次运行起才有增量")
             return
 
-        # 按锚定窗口取内容：8-13 的日报恒为 8-13 0:00 ~ 8-13 24:00（东八区，
-        # 即完整自然日），与实际推送时刻无关。补推、重跑抓取都不会改变已定
-        # 日期的内容 —— 窗口内补抓的自动进当天，窗口后补抓的自然进第二天。
+        # 按锚定窗口取内容：_report_date 返回今天（东八区），daily_range(今天)
+        # = 昨天的自然日窗口（[昨天 0:00, 今天 0:00) 北京），与推送时刻无关。
+        # 补推时传 --date 窗口结束日；同一窗口跑多次，内容恒定可复现。
         win_start, win_end = period.daily_range(_report_date(cfg))
         pending = store.pending_in_window(win_start, win_end)
         totals = _year_totals(rows)
@@ -721,8 +721,8 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         d = digest.build(
             pending,
             last_notify_at=_last_notify_time(store),
-            # 标题日期要跟着 --date 走：补推 8-14 的日报，标题不能写成
-            # 生成那天。窗口终点就是那天的 24:00，拿它当参考时刻正合适。
+            # 标题日期由 win_end 决定：daily_range(day) 的 win_end 是 day 0:00，
+            # 转成北京日期就是 day 本身，即窗口结束日。
             now=datetime.fromisoformat(win_end),
             total_contributors=meta.get("contributors"),
             total_commits=totals["commits"],
@@ -774,18 +774,21 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 
 
 def _report_date(cfg):
-    """--date 指定的日报日期；未指定时取昨天（东八区）。
+    """--date 指定的日报日期；未指定时取今天（东八区）。
 
-    取昨天而非今天：锚点在 0 点（整个自然日），今天的窗口要到今晚 24:00
-    才关闭，此刻推会推到一个尚未闭合的区间。取昨天则该窗口早已闭合，
-    完整覆盖了昨晚 18:00 抓取的那一批（18:00~24:00 那 6 小时的数据要等到
-    次日 18:00 才抓到，天然落进"昨天"的窗口里，不会漏，但也不会精确到
-    发生的当天——这是本方案接受的取舍）。
+    daily_range(day) 的语义是以 day 为窗口结束日：返回
+    [day-1 0:00, day 0:00) 东八区半开区间。要覆盖昨天落库的
+    事件，必须传今天——daily_range(今天) 恰好是昨天的自然日窗口。
+
+    旧实现传昨天，导致 daily_range(昨天) = 前天的窗口，推送
+    内容错位一天。
+
+    --date 参数含义：指定窗口结束日，即 --date 2026-09-08
+    覆盖 9/7 0:00 ~ 9/8 0:00 北京的落库事件，标题为 2026-09-08。
     """
     raw = getattr(cfg, "date", None)
     if not raw:
-        return (datetime.now(timezone.utc).astimezone(period.CST).date()
-                - timedelta(days=1))
+        return datetime.now(timezone.utc).astimezone(period.CST).date()
     return datetime.strptime(raw, "%Y-%m-%d").date()
 
 

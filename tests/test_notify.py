@@ -900,15 +900,16 @@ class TestDailyWindowAnchoring:
 
 
 class TestReportDate:
-    """_report_date：未指定 --date 时取昨天（东八区）；指定时返回该日期。
+    """_report_date：未指定 --date 时取今天（东八区），作为 daily_range 的窗口结束日。
 
-    不能写死钟点——「现在」是浮动的，硬编码时刻在其他时段跑会失效。
-    只验证「昨天」而不验证具体数字，这样不论何时跑测试都成立。
+    daily_range(day) 返回 [day-1 0:00, day 0:00) 东八区半开区间，
+    所以要覆盖昨天落库的事件，必须传今天。旧实现传昨天导致窗口落到
+    前天（错位一天）。不能写死钟点——只验证「今天」。
     """
 
-    def test_no_date_returns_yesterday_in_cst(self):
-        """未指定 --date 时，返回东八区的昨天日期。"""
-        from datetime import timezone as _tz, timedelta as _td
+    def test_no_date_returns_today_in_cst(self):
+        """未指定 --date 时，返回东八区的今天日期（daily_range 的窗口结束日）。"""
+        from datetime import timezone as _tz
         from contributors.main import _report_date
         from contributors.config import Config
         from contributors.notify.period import CST
@@ -919,8 +920,7 @@ class TestReportDate:
                      include_forks="all", max_repo_size=0)
         result = _report_date(cfg)
 
-        expected = (_dt_mod.datetime.now(_tz.utc).astimezone(CST).date()
-                    - _td(days=1))
+        expected = _dt_mod.datetime.now(_tz.utc).astimezone(CST).date()
         assert result == expected
 
     def test_explicit_date_is_returned_as_is(self):
