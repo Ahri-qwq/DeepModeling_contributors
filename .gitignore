@@ -31,3 +31,8 @@ dist/
 # 临时任务的运行产物：带时间戳、每跑一次多三个文件，可用同目录的
 # 采集脚本重跑复现。需求、结论与脚本本身随仓库公开。
 /docs/临时任务/popularity_*
+
+# GitHub token（backup_data.sh 的凭据，SSH 改造后已不再 source，但文件仍在）
+.token.env
+# 手动修改脚本前的备份，有 git 就不需要
+*.sh.bak
