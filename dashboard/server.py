@@ -3,6 +3,7 @@
 路由表：
     GET /                          主看板 HTML
     GET /yearly                    年度排行页 HTML
+    GET /assets/<name>             静态资源（logo、favicon）
     GET /api/summary?from=&to=&days=     KPI 数字
     GET /api/repos?from=&to=&days=       各仓库计数
     GET /api/contributors?from=&to=&days=&limit=  贡献者排行（PR/Issue 作者）
@@ -68,6 +69,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._serve_static("index.html", "text/html; charset=utf-8")
             elif path == "/yearly":
                 self._serve_static("yearly.html", "text/html; charset=utf-8")
+            elif path.startswith("/assets/"):
+                self._serve_asset(path[len("/assets/"):])
             elif path == "/api/summary":
                 self._json(queries.summary(_events_for_request(qs)))
             elif path == "/api/repos":
@@ -121,6 +124,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_asset(self, name: str):
+        """静态资源（logo、favicon）。只允许 assets/ 下的白名单后缀，且解析后的
+        真实路径必须仍在 assets/ 内——否则 /assets/../../etc/passwd 这类请求
+        能把服务器上任意文件读出去。看板是公网可访问的，这道校验不能省。
+        """
+        allowed = {".png": "image/png", ".jpg": "image/jpeg",
+                   ".jpeg": "image/jpeg", ".svg": "image/svg+xml",
+                   ".ico": "image/x-icon", ".webp": "image/webp"}
+        assets_dir = (STATIC_DIR / "assets").resolve()
+        target = (assets_dir / name).resolve()
+        if not target.is_file() or target.suffix.lower() not in allowed:
+            self._not_found()
+            return
+        if assets_dir not in target.parents:      # 目录穿越拦截
+            self._not_found()
+            return
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", allowed[target.suffix.lower()])
+        self.send_header("Content-Length", str(len(body)))
+        # logo 极少变，缓存一天省掉每次刷新的重复请求
+        self.send_header("Cache-Control", "public, max-age=86400")
         self.end_headers()
         self.wfile.write(body)
 

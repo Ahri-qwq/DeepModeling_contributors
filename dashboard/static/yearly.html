@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DeepModeling 年度排行</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
 <style>
   :root {
     --bg: #eef0f8;
@@ -26,7 +27,8 @@
   }
   .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
   header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 12px; }
-  h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 10px; }
+  .brand-logo { width: 28px; height: 28px; border-radius: 6px; flex: none; display: block; }
   nav a {
     display: inline-flex; align-items: center; gap: 6px;
     color: var(--accent-dark); text-decoration: none; font-size: 14px; font-weight: 600;
@@ -85,7 +87,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>DeepModeling 年度排行</h1>
+    <h1><img class="brand-logo" src="/assets/logo.png" alt="DeepModeling" width="28" height="28">DeepModeling 年度排行</h1>
     <nav><a href="/">← 返回看板</a></nav>
   </header>
   <div class="caveat">数据范围：过去一年 · 每日重算 · 含 commit 作者（主页面的贡献者排行不含 commit，见首页说明）</div>

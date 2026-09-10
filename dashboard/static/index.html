@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DeepModeling 社区看板</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -31,7 +32,11 @@
   }
   .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
   header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; flex-wrap: wrap; gap: 12px; }
-  h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 10px; }
+  /* logo 比标题字号略大（28 vs 20），和文字基线居中对齐成一个品牌组。
+     原图是实心深蓝方块，浅色底上直角显得生硬，加圆角更像一枚图标。
+     flex:none 防止窄屏下被压扁。 */
+  .brand-logo { width: 28px; height: 28px; border-radius: 6px; flex: none; display: block; }
   nav a {
     display: inline-flex; align-items: center; gap: 6px;
     color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600;
@@ -223,7 +228,7 @@
 <div id="barTip"></div>
 <div class="wrap">
   <header>
-    <h1>DeepModeling 社区看板</h1>
+    <h1><img class="brand-logo" src="/assets/logo.png" alt="DeepModeling" width="28" height="28">DeepModeling 社区看板</h1>
     <nav><a href="/yearly">年度排行 →</a></nav>
   </header>
 
