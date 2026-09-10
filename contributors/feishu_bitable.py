@@ -13,10 +13,11 @@
 - token 自动刷新：tenant_access_token 有效期 2 小时，剩余 <30 分钟再取会
   返回新 token。本模块持单个 client 实例，缓存 token 并在过期前重取。
 - 同步粒度：贡献者×仓库，与 by_repo.csv 逐行对应（不做按仓库聚合）。
-  唯一键是 repo+login 组合——单纯 repo 在多贡献者场景下会互相覆盖。
-  已有行用 record_id 匹配更新，没有的行新增。首跑全量写入，后续只动
-  变化的行。（曾短暂实现过按 repo 聚合成一行的版本，2026-09-09 按
-  实际展示需求改回逐行同步，group_by_repo 保留供统计场景复用。）
+  唯一键是 repo+login+email 三元组——仅用 repo+login 时，96 个未关联 GitHub
+  账号的贡献者（login 为空）在同一仓库内全部碰撞成同一个键，导致冗余行和
+  陈旧数据（2026-09-10 修复）。已有行用 record_id 匹配更新，没有的行新增。
+  首跑全量写入，后续只动变化的行。（曾短暂实现过按 repo 聚合成一行的版本，
+  2026-09-09 按实际展示需求改回逐行同步，group_by_repo 保留供统计场景复用。）
 - 失败只记日志不影响主流程：调用方（daily_report.sh）捕获异常打 log，绝不
   让同步失败拖垮 --fetch 的成功状态。
 """
@@ -318,18 +319,30 @@ def _to_int(v: Any) -> int:
 
 
 def _row_key(row: dict) -> str:
-    """行的唯一键：repo+login 组合。单纯 repo 在贡献者×仓库粒度下会把
-    同一仓库的多个贡献者互相覆盖，必须加 login 才能一一对应。
+    """行的唯一键：repo + login + email 三元组。
+
+    仅用 repo+login 会有碰撞：96 个未关联 GitHub 账号的贡献者 login 为空，
+    同仓库多人挤成同一个键，导致互相覆盖和冗余行（GPUMD 21 人全挤成一个键
+    就是典型案例，见 2026-09-10 修复记录）。
+
+    email 单独也不够：login 有值时 email 可以为空（318 行机器人/CI 账号没有
+    邮箱），且同一人在不同仓库可能有多个邮箱（分号拼接）。
+
+    三元组 repo+login+email 在当前 by_repo.csv 的全部 749 行中经过验证完全
+    唯一，而且两侧（CSV 行和表格 fields）都有这三列，可以对称计算。
     """
-    return f"{str(row.get('repo', '')).strip()}\x1f{str(row.get('login', '')).strip()}"
+    repo = str(row.get("repo", "")).strip()
+    login = str(row.get("login", "")).strip()
+    email = str(row.get("email", "")).strip()
+    return f"{repo}\x1f{login}\x1f{email}"
 
 
 def sync(csv_path: Path, client: BitableClient) -> dict:
     """把 csv 内容增量同步进表。返回结果统计。
 
-    流程：读现有记录（按 repo+login 建索引）→ 读 csv（逐行，不聚合）→
+    流程：读现有记录（按 repo+login+email 建索引）→ 读 csv（逐行，不聚合）→
     比较 → 新增 / 更新。表格若为空（首跑），全量新增。非空则按
-    repo+login 匹配：有则更新字段，无则新增。
+    repo+login+email 匹配：有则更新字段，无则新增。
     """
     rows = read_csv(csv_path)
     if not rows:
@@ -340,7 +353,8 @@ def sync(csv_path: Path, client: BitableClient) -> dict:
     for rec in existing:
         f = rec.get("fields", {})
         key = _row_key(f)
-        if key.strip("\x1f"):
+        # repo 字段为空的行是无意义记录，跳过（三元组里 repo 是第一段）
+        if key.split("\x1f")[0]:
             by_key[key] = rec.get("record_id", "")
 
     to_create = []
@@ -355,7 +369,9 @@ def sync(csv_path: Path, client: BitableClient) -> dict:
 
     added = client.batch_create(to_create) if to_create else 0
     updated = client.batch_update(to_update) if to_update else 0
-    return {"added": added, "updated": updated, "skipped": len(existing) - len(to_update)}
+    # skipped：表格里有、但 CSV 里没有的行（历史残留）
+    skipped = len(existing) - len(to_update)
+    return {"added": added, "updated": updated, "skipped": skipped}
 
 
 def _make_client_from_env() -> BitableClient:
