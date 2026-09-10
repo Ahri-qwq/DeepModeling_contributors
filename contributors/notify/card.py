@@ -213,10 +213,10 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
         lines = [_headline(d), "昨日无更新"]
         dashboard_url = os.environ.get("DASHBOARD_URL", "")
         if dashboard_url:
-            lines.append(f"[查看完整看板]({dashboard_url})")
+            lines.append(f"[查看可互动图表看板]({dashboard_url})")
         bitable_url = os.environ.get("FEISHU_BITABLE_VIEW_URL", "")
         if bitable_url:
-            lines.append(f"[查看贡献者明细表]({bitable_url})")
+            lines.append(f"[查看一年内贡献者明细表格]({bitable_url})")
         lines += ["", _recent_line(d)]
         totals = _totals_line(d)
         if totals:
@@ -235,14 +235,14 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     # 看板链接：环境变量未配置时静默跳过，不影响本地跑和 dry-run
     dashboard_url = os.environ.get("DASHBOARD_URL", "")
     if dashboard_url:
-        lines.append(f"[查看完整看板]({dashboard_url})")
+        lines.append(f"[查看可互动图表看板]({dashboard_url})")
 
     # 多维表格链接：同样的静默跳过模式。存的是带租户子域名的完整访问
     # 链接（形如 https://<租户子域名>.feishu.cn/base/<app_token>?table=<table_id>），
     # 通用 open.feishu.cn 域名的链接打不开，见飞书多维表格接入报告。
     bitable_url = os.environ.get("FEISHU_BITABLE_VIEW_URL", "")
     if bitable_url:
-        lines.append(f"[查看贡献者明细表]({bitable_url})")
+        lines.append(f"[查看一年内贡献者明细表格]({bitable_url})")
 
     for title, items in (("合并的 PR", d.merged_prs),
                          ("新建的 PR", d.opened_prs),
