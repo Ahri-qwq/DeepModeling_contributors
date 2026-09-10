@@ -17,6 +17,10 @@
     --accent-light: #e4e7fb;
   }
   * { box-sizing: border-box; }
+  /* hidden 属性只是 UA 样式表的 display:none，任何作者写的 display:flex 都会盖过它。
+     好几处用 el.hidden = true 控制显隐（图例、展开/收起条），一旦这些元素自带
+     display 就静默失效——加 !important 让 hidden 恒定优先。 */
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     background: var(--bg);
@@ -556,6 +560,8 @@ function renderRepos(rows) {
   ).join("") + '<span class="legend-item">横条长度 = 该仓库事件数，鼠标悬停看分项</span>';
 
   const hasMore = rows.length > REPO_COLLAPSED;
+  // 只有一个仓库时既没有"更多"可展开，排名比较也无从谈起——两种控件都不显示。
+  // 选中单仓库时仓库活跃度必然只剩一行，正是这种情况。
   moreBar.hidden = !hasMore;
   topLink.hidden = !hasMore;
   if (hasMore) {
@@ -565,6 +571,8 @@ function renderRepos(rows) {
     document.getElementById("repoToggleBottom").textContent = label;
     topLink.textContent = label;
   }
+  // 单仓库时也收起展开态，避免下次切回多仓库时带着旧的展开状态
+  if (!hasMore) repoExpanded = false;
 }
 
 function toggleRepos() {
