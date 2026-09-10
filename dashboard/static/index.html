@@ -63,6 +63,46 @@
   }
   .range-bar .sep { color: var(--muted); font-size: 13px; }
 
+  /* 下拉框：跟 range-bar 的按钮/日期框保持同一套边框与圆角 */
+  select.picker {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--panel);
+    cursor: pointer;
+    max-width: 220px;
+  }
+  select.picker:focus { outline: none; border-color: var(--accent); }
+  .range-bar .spacer { flex: 1 1 auto; }
+  .range-bar label.pick-label { font-size: 13px; color: var(--muted); }
+
+  /* 加载指示：整页只此一处，就放在日期栏下面。
+     原来的做法是每个面板各自显示"加载中…"，一屏会同时闪出四五个占位文字，
+     面板高度跟着塌一下再弹回来——那才是卡顿感的来源。
+     现在面板骨架始终不动，只有这一行状态在呼吸。 */
+  .load-status {
+    display: flex; align-items: center; gap: 8px;
+    min-height: 26px;          /* 固定高度：出现/消失都不会顶动下面的内容 */
+    margin: -28px 0 28px;      /* 吃掉 range-bar 的下边距，不额外撑开页面 */
+    font-size: 13px; color: var(--muted);
+    opacity: 0; transition: opacity .2s ease;
+  }
+  .load-status.on { opacity: 1; }
+  .load-status .dot {
+    width: 13px; height: 13px; flex: none;
+    border: 2px solid var(--accent-light);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 面板标题与右上角控件同排：h2 占左，控件靠右 */
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .panel-head h2 { margin: 0; }
+
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 48px; }
   .kpi {
     padding: 18px 20px;
@@ -73,6 +113,12 @@
   }
   .kpi .num { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; color: var(--accent-dark); }
   .kpi .label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  /* 系统设了「减少动态效果」就别做补间，直接给最终值 */
+  @media (prefers-reduced-motion: reduce) {
+    .seg-wrap, .kpi .num, .rank-row { transition: none !important; }
+    .load-status .dot { animation-duration: 2s; }
+  }
 
   section { margin-bottom: 32px; }
   .panel {
@@ -88,16 +134,63 @@
   .chart-box { position: relative; height: 280px; }
 
   .repo-list { display: flex; flex-direction: column; gap: 10px; }
-  .repo-row { display: grid; grid-template-columns: 140px 1fr 60px; align-items: center; gap: 12px; font-size: 13px; }
+  .repo-row { display: grid; grid-template-columns: 140px 1fr 60px; align-items: center; gap: 12px; font-size: 13px; position: relative; }
   .repo-row .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .repo-row .bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; display: flex; }
-  .repo-row .bar span { display: block; height: 100%; }
+  /* overflow:hidden 已去掉——裁剪功能由 .seg-wrap span 的 border-radius 取代，
+     这样气泡 ::after 才能从 .bar 上方探出来 */
+  .repo-row .bar { height: 8px; border-radius: 4px; background: var(--border); display: flex; }
   .repo-row .total { text-align: right; color: var(--muted); }
+
+  /* seg-wrap：bar 内的各段，撑满行高方便点击 */
+  .seg-wrap {
+    display: flex; align-items: center;
+    flex-shrink: 0; min-width: 4px;
+    align-self: stretch; cursor: default;
+    /* 宽度补间：渲染时先给旧宽度，下一帧再切到新宽度，条形就"走"过去而不是跳过去 */
+    transition: width .6s cubic-bezier(.22,.8,.3,1);
+  }
+  .seg-wrap span { display: block; height: 8px; width: 100%; }
+  .seg-wrap:first-child span { border-radius: 4px 0 0 4px; }
+  .seg-wrap:last-child span  { border-radius: 0 4px 4px 0; }
+  .seg-wrap:only-child span  { border-radius: 4px; }
+
+  /* bar-tip：跟随鼠标的全局浮层，用 JS 定位，完全不受父级 overflow/stacking 影响 */
+  #barTip {
+    position: fixed; display: none;
+    background: var(--text); color: #fff;
+    padding: 4px 9px; border-radius: 5px;
+    font-size: 12px; line-height: 1.4; white-space: nowrap;
+    pointer-events: none; z-index: 9999;
+    box-shadow: 0 2px 8px rgba(31,34,80,0.22);
+    transform: translate(-50%, -100%); margin-top: -8px;
+  }
+  #barTip::after {
+    content: ""; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: var(--text);
+  }
+
+  /* 颜色图例 */
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+  /* 展开/收起：标题旁和列表底部各一个，长列表滚到底不必再翻回去 */
+  .more-bar { display: flex; justify-content: center; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .more-btn {
+    border: 1px solid var(--border); background: var(--panel);
+    color: var(--accent-dark); font-size: 13px;
+    padding: 5px 16px; border-radius: 6px; cursor: pointer;
+  }
+  .more-btn:hover { background: var(--accent-light); border-color: #d7dafa; }
 
   .rank-list { display: flex; flex-direction: column; gap: 8px; }
   .rank-row { display: flex; justify-content: space-between; font-size: 14px; padding: 4px 0; }
   .rank-row .login { color: var(--text); }
   .rank-row .count { color: var(--muted); }
+
+  /* 注：不给 .rank-row/.repo-row 常驻 will-change——几十行各占一个合成层反而拖慢
+     渲染。FLIP 只在动画期间临时加，动画结束由 JS 摘掉。 */
 
   .stream { display: none; flex-direction: column; gap: 12px; margin-top: 16px; }
   .stream.open { display: flex; }
@@ -109,9 +202,21 @@
 
   .empty, .loading { color: var(--muted); font-size: 13px; padding: 24px 0; }
   .caveat { font-size: 12px; color: var(--muted); margin-top: 12px; }
+
+  /* 页脚说明 */
+  .site-footer {
+    margin-top: 48px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; line-height: 1.9; color: var(--muted);
+  }
+  .site-footer .row { margin: 0; }
+  .site-footer a { color: var(--accent-dark); text-decoration: none; }
+  .site-footer a:hover { text-decoration: underline; }
+
 </style>
 </head>
 <body>
+<div id="barTip"></div>
 <div class="wrap">
   <header>
     <h1>DeepModeling 社区看板</h1>
@@ -127,30 +232,56 @@
     <input type="date" id="fromInput">
     <span class="sep">~</span>
     <input type="date" id="toInput">
+    <span class="spacer"></span>
+    <label class="pick-label" for="repoSelect">仓库</label>
+    <select class="picker" id="repoSelect" title="按仓库筛选，全站数据同步刷新">
+      <option value="">全部仓库</option>
+    </select>
   </div>
 
-  <div class="kpis" id="kpis">
-    <div class="loading">加载中…</div>
+  <div class="load-status" id="loadStatus" role="status" aria-live="polite">
+    <span class="dot"></span><span id="loadStatusText">加载中…</span>
   </div>
+
+  <div class="kpis" id="kpis"></div>
 
   <section>
     <div class="panel">
-      <h2>活动热力 <span class="hint">按天事件数</span></h2>
+      <div class="panel-head">
+        <h2>活动热力 <span class="hint">按天事件数</span></h2>
+        <select class="picker" id="chartTypeSelect" title="切换图表类型">
+          <option value="bar">柱形图</option>
+          <option value="line">折线图</option>
+        </select>
+      </div>
       <div class="chart-box"><canvas id="timelineChart"></canvas></div>
     </div>
   </section>
 
   <section>
     <div class="panel">
-      <h2>仓库活跃度</h2>
-      <div class="repo-list" id="repoList"><div class="loading">加载中…</div></div>
+      <div class="panel-head">
+        <h2 id="repoHeading">仓库活跃度</h2>
+        <span class="toggle-link" id="repoToggleTop" hidden></span>
+      </div>
+      <div class="repo-list" id="repoList"></div>
+      <div class="legend" id="repoLegend" hidden></div>
+      <div class="more-bar" id="repoMoreBar" hidden>
+        <button class="more-btn" id="repoToggleBottom"></button>
+      </div>
     </div>
   </section>
 
   <section>
     <div class="panel">
-      <h2>贡献者排行 <span class="hint">基于 PR/Issue，commit 作者未记录，见「年度排行」</span></h2>
-      <div class="rank-list" id="rankList"><div class="loading">加载中…</div></div>
+      <div class="panel-head">
+        <h2>贡献者排行 <span class="hint">基于 PR/Issue，commit 作者未记录，见「年度排行」</span></h2>
+        <span class="toggle-link" id="rankToggleTop" hidden></span>
+      </div>
+      <div class="rank-list" id="rankList"></div>
+      <div class="more-bar" id="rankMoreBar" hidden>
+        <button class="more-btn" id="rankToggleBottom"></button>
+      </div>
     </div>
   </section>
 
@@ -163,6 +294,12 @@
       <div class="stream" id="stream"></div>
     </div>
   </section>
+  <footer class="site-footer">
+    <p class="row">数据来源：DeepModeling 组织下各 GitHub 开源仓库公开记录，
+      每日自动抓取汇总，最近更新于 <span id="updatedAt">—</span>。</p>
+    <p class="row">统计口径受限于 GitHub API 与抓取窗口，数值仅供参考，不作为考核依据。</p>
+    <p class="row">本看板由 AISI 开源社区部门维护，如有疑问或数据勘误，请通过飞书联系 18376072883。</p>
+  </footer>
 </div>
 
 <script>
@@ -170,12 +307,15 @@ const KIND_LABEL = { commit: "提交", pr: "PR", issue: "Issue" };
 const KIND_COLOR = { commit: "#b7bdf2", pr: "#4f5fd9", issue: "#f0994f" };
 
 let range = { days: "30", from: null, to: null };
+let selectedRepo = "";      // 空串 = 全部仓库
+let chartType = "bar";      // 活动热力图表类型：bar / line
 let timelineChart = null;
 
 function qs(params) {
   const p = new URLSearchParams();
   if (range.from && range.to) { p.set("from", range.from); p.set("to", range.to); }
   else { p.set("days", range.days); }
+  if (selectedRepo) p.set("repo", selectedRepo);
   for (const [k, v] of Object.entries(params || {})) if (v) p.set(k, v);
   return p.toString();
 }
@@ -188,67 +328,314 @@ async function fetchJson(path, params) {
 
 function fmtNum(n) { return n == null ? "—" : n.toLocaleString("zh-CN"); }
 
-function renderKpis(s) {
-  const rate = s.pr_merge_rate == null ? "—" : `${Math.round(s.pr_merge_rate * 100)}%`;
-  document.getElementById("kpis").innerHTML = `
-    <div class="kpi"><div class="num">${fmtNum(s.total_events)}</div><div class="label">总事件数</div></div>
-    <div class="kpi"><div class="num">${fmtNum(s.active_contributors)}</div><div class="label">活跃贡献者（PR/Issue）</div></div>
-    <div class="kpi"><div class="num">${rate}</div><div class="label">PR 合并率</div></div>
-    <div class="kpi"><div class="num">${fmtNum(s.active_repos)}</div><div class="label">活跃仓库数</div></div>
-  `;
+const prefersReduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** 数字补间：从 from 滚到 to。from 为 null（首次渲染/原来是占位符）就直接落值。 */
+function countUp(el, from, to, fmt) {
+  cancelAnimationFrame(el._raf);
+  if (from == null || from === to || prefersReduced()) { el.textContent = fmt(to); return; }
+  // 350ms 足够让人感知到"数字在变"，不必拖到 650ms
+  const dur = 350, t0 = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / dur);
+    const eased = 1 - Math.pow(1 - k, 3);        // easeOutCubic：起步快、收尾稳
+    el.textContent = fmt(from + (to - from) * eased);
+    if (k < 1) el._raf = requestAnimationFrame(step);
+  };
+  el._raf = requestAnimationFrame(step);
 }
 
-function renderTimeline(rows) {
-  const labels = rows.map(r => r.date);
-  const data = rows.map(r => r.count);
-  const ctx = document.getElementById("timelineChart").getContext("2d");
+// KPI 卡片只建一次，之后原地改数字——整块重建会让补间无从下手（节点就是新的）
+const KPI_DEFS = [
+  { key: "total_events", label: "总事件数" },
+  { key: "active_contributors", label: "活跃贡献者（PR/Issue）" },
+  { key: "pr_merge_rate", label: "PR 合并率", pct: true },
+  { key: "active_repos", label: "活跃仓库数" },
+];
+
+function ensureKpiCards() {
+  const box = document.getElementById("kpis");
+  if (box.children.length) return;
+  box.innerHTML = KPI_DEFS.map(d =>
+    `<div class="kpi"><div class="num" data-kpi="${d.key}">—</div>` +
+    `<div class="label">${d.label}</div></div>`).join("");
+}
+
+function renderKpis(s) {
+  ensureKpiCards();
+  for (const d of KPI_DEFS) {
+    const el = document.querySelector(`[data-kpi="${d.key}"]`);
+    if (!el) continue;
+    const raw = s[d.key];
+    const to = raw == null ? null : Number(raw);
+    const prev = el.dataset.val === undefined || el.dataset.val === ""
+      ? null : Number(el.dataset.val);
+    el.dataset.val = to == null ? "" : String(to);
+    const fmt = d.pct ? (v) => `${Math.round(v * 100)}%` : (v) => fmtNum(Math.round(v));
+    if (to == null) { cancelAnimationFrame(el._raf); el.textContent = "—"; continue; }
+    countUp(el, prev, to, fmt);
+  }
+}
+
+let lastTimelineRows = [];   // 切图表类型时不重新请求，直接用上次的数据重绘
+
+function timelineDataset(data, ctx) {
   const gradient = ctx.createLinearGradient(0, 0, 0, 260);
   gradient.addColorStop(0, "#4f5fd9");
   gradient.addColorStop(1, "#9aa3ec");
-  if (timelineChart) timelineChart.destroy();
-  timelineChart = new Chart(ctx, {
-    type: "bar",
-    data: { labels, datasets: [{ data, backgroundColor: gradient, borderRadius: 3, barPercentage: 0.7 }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, color: "#6b6f8a", font: { size: 11 } } },
-        y: { grid: { color: "#eef0f8" }, ticks: { color: "#6b6f8a", font: { size: 11 } } },
+  // 折线图用半透明填充，柱形图用实心渐变——同一份数据两种读法：
+  // 柱形看单日高低，折线看趋势走向
+  return chartType === "line"
+    ? {
+        data, borderColor: "#4f5fd9", backgroundColor: "rgba(79,95,217,0.12)",
+        borderWidth: 2, fill: true, tension: 0.32,
+        pointRadius: data.length > 60 ? 0 : 2.5,
+        pointHoverRadius: 4, pointBackgroundColor: "#4f5fd9",
+      }
+    : { data, backgroundColor: gradient, borderRadius: 3, barPercentage: 0.7 };
+}
+
+function renderTimeline(rows) {
+  lastTimelineRows = rows;
+  const labels = rows.map(r => r.date);
+  const data = rows.map(r => r.count);
+  const ctx = document.getElementById("timelineChart").getContext("2d");
+  const dur = prefersReduced() ? 0 : 600;
+
+  // 首次：建图表。之后一律走 update()——destroy + new Chart 是"瞬间替换"，
+  // 不会有任何补间，这正是原来切换时图表生硬跳变的根源。
+  if (!timelineChart || timelineChart.config.type !== chartType) {
+    if (timelineChart) timelineChart.destroy();
+    timelineChart = new Chart(ctx, {
+      type: chartType,
+      data: { labels, datasets: [timelineDataset(data, ctx)] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: { duration: dur, easing: "easeOutQuart" },
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 10, color: "#6b6f8a", font: { size: 11 } } },
+          y: { beginAtZero: true, grid: { color: "#eef0f8" }, ticks: { color: "#6b6f8a", font: { size: 11 } } },
+        },
       },
-    },
+    });
+    return;
+  }
+
+  // 原地更新：Chart.js 自己把柱子的位置/高度、坐标轴的刻度补间过去，
+  // 于是"7 天变 30 天"表现为柱子平滑移位、新柱子从基线长出来
+  timelineChart.data.labels = labels;
+  timelineChart.data.datasets = [timelineDataset(data, ctx)];
+  timelineChart.options.animation.duration = dur;
+  timelineChart.update();
+}
+
+const REPO_COLLAPSED = 12;   // 默认展示的仓库数
+const RANK_COLLAPSED = 10;   // 默认展示的贡献者数
+
+/**
+ * FLIP：先量旧位置，重建 DOM，再用反向 transform 把新节点"按"回旧位置，
+ * 最后放开让它们滑到新位置。innerHTML 重建出来的节点不会自己补间，
+ * 只能这么手动补——这是让排名"上下移动"而不是"瞬间重排"的唯一办法。
+ *
+ * 性能要点：读（getBoundingClientRect）和写（style）必须分成两批。
+ * 边读边写会让浏览器每个元素都重算一次布局（forced synchronous layout），
+ * 22 行就是 22 次全量重排，切换时肉眼可见地钝。
+ */
+function flip(container, keyOf, mutate) {
+  if (prefersReduced()) { mutate(); return; }
+
+  // 读一批：旧位置
+  const before = new Map();
+  for (const el of container.children) before.set(keyOf(el), el.getBoundingClientRect().top);
+
+  mutate();
+
+  // 读二批：新位置（此时只写 DOM 不读样式，浏览器只需重排一次）
+  const moves = [];
+  for (const el of container.children) {
+    const prevTop = before.get(keyOf(el));
+    if (prevTop === undefined) continue;          // 新出现的行不做位移
+    const dy = prevTop - el.getBoundingClientRect().top;
+    if (dy) moves.push([el, dy]);
+  }
+  if (!moves.length) return;
+
+  // 写一批：全部就位后再统一放开，中途不再读布局
+  for (const [el, dy] of moves) {
+    el.style.transition = "none";
+    el.style.transform = `translateY(${dy}px)`;
+    el.style.willChange = "transform";            // 只在动的时候提层，动完摘掉
+  }
+  requestAnimationFrame(() => {
+    for (const [el] of moves) {
+      el.style.transition = "transform .55s cubic-bezier(.22,.8,.3,1)";
+      el.style.transform = "";
+      el.addEventListener("transitionend", () => {
+        el.style.willChange = "";
+        el.style.transition = "";
+      }, { once: true });
+    }
   });
 }
 
-function renderRepos(rows) {
-  const el = document.getElementById("repoList");
-  if (!rows.length) { el.innerHTML = '<div class="empty">这段时间没有数据</div>'; return; }
-  const top = rows.slice(0, 12);
-  const max = Math.max(...top.map(r => r.commit + r.pr + r.issue));
-  el.innerHTML = top.map(r => {
-    const total = r.commit + r.pr + r.issue;
-    const w = (kind) => max ? (r[kind] / max * 100) : 0;
-    return `
-      <div class="repo-row">
-        <div class="name" title="${r.repo}">${r.repo}</div>
-        <div class="bar">
-          <span style="width:${w('commit')}%;background:${KIND_COLOR.commit}"></span>
-          <span style="width:${w('pr')}%;background:${KIND_COLOR.pr}"></span>
-          <span style="width:${w('issue')}%;background:${KIND_COLOR.issue}"></span>
-        </div>
-        <div class="total">${total}</div>
-      </div>`;
-  }).join("");
+/**
+ * 进度条宽度补间。新插入的节点直接带最终宽度是不触发 transition 的，
+ * 所以先以 0 宽插入，下一帧再切到目标宽度。
+ * 读写分开：先把所有节点写完（0%），再统一在 rAF 里切到目标值。
+ */
+function animateWidths(container, apply) {
+  if (prefersReduced()) { apply(); return; }
+  requestAnimationFrame(apply);
 }
 
+let repoRows = [];
+let repoExpanded = false;
+
+function renderRepos(rows) {
+  repoRows = rows;
+  const el = document.getElementById("repoList");
+  const legend = document.getElementById("repoLegend");
+  const moreBar = document.getElementById("repoMoreBar");
+  const topLink = document.getElementById("repoToggleTop");
+
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">这段时间没有数据</div>';
+    legend.hidden = moreBar.hidden = true;
+    topLink.hidden = true;
+    return;
+  }
+
+  const shown = repoExpanded ? rows : rows.slice(0, REPO_COLLAPSED);
+  // 条宽以「当前可见集合」的最大值为基准：展开后出现更大值时整组重新缩放，
+  // 视觉上才对得上；用全集最大值会让收起状态下的条普遍偏短
+  const max = Math.max(...shown.map(r => r.commit + r.pr + r.issue));
+
+  // 计数为 0 的段不渲染，否则会留下一个指不中却占位的空 span
+  const segHTML = (r) => ["commit", "pr", "issue"].map(kind => r[kind] > 0
+    ? `<div class="seg-wrap" data-tip="${KIND_LABEL[kind]} ${r[kind]}" data-w="${max ? (r[kind] / max * 100) : 0}" style="width:0%"><span style="background:${KIND_COLOR[kind]}"></span></div>`
+    : "").join("");
+
+  // 先记下旧总量，重建后从旧值滚到新值（新出现的行没有旧值，直接落值）
+  const prevTotals = new Map();
+  for (const row of el.children) {
+    const t = row.querySelector(".total");
+    if (t) prevTotals.set(row.dataset.repo, Number(t.dataset.v));
+  }
+
+  flip(el, (row) => row.dataset.repo, () => {
+    el.innerHTML = shown.map(r => `
+      <div class="repo-row" data-repo="${r.repo}">
+        <div class="name" title="${r.repo}">${r.repo}</div>
+        <div class="bar">${segHTML(r)}</div>
+        <div class="total" data-v="${r.commit + r.pr + r.issue}" data-prev="${prevTotals.has(r.repo) ? prevTotals.get(r.repo) : ""}">${r.commit + r.pr + r.issue}</div>
+      </div>`).join("");
+  });
+
+  // 只补间数值真的变了的行——12 行全跑 rAF 会让切换卡顿
+  for (const row of el.children) {
+    const t = row.querySelector(".total");
+    if (!t || t.dataset.prev === "") continue;
+    const from = Number(t.dataset.prev), to = Number(t.dataset.v);
+    if (from === to) continue;
+    countUp(t, from, to, (v) => fmtNum(Math.round(v)));
+  }
+
+  // 宽度延后一帧到位，条形就"长"过去而不是跳过去
+  animateWidths(el, () => {
+    el.querySelectorAll(".seg-wrap").forEach(s => {
+      const w = s.dataset.w;
+      if (w !== undefined) s.style.width = w + "%";
+    });
+  });
+
+  legend.hidden = false;
+  legend.innerHTML = ["commit", "pr", "issue"].map(k =>
+    `<span class="legend-item"><span class="legend-dot" style="background:${KIND_COLOR[k]}"></span>${KIND_LABEL[k]}</span>`
+  ).join("") + '<span class="legend-item">横条长度 = 该仓库事件数，鼠标悬停看分项</span>';
+
+  const hasMore = rows.length > REPO_COLLAPSED;
+  moreBar.hidden = !hasMore;
+  topLink.hidden = !hasMore;
+  if (hasMore) {
+    const label = repoExpanded
+      ? `收起 ↑`
+      : `展开全部 ${rows.length} 个 ↓`;
+    document.getElementById("repoToggleBottom").textContent = label;
+    topLink.textContent = label;
+  }
+}
+
+function toggleRepos() {
+  repoExpanded = !repoExpanded;
+  renderRepos(repoRows);
+  if (!repoExpanded) keepPanelInView("repoHeading");
+}
+
+/** 收起长列表后页面可能停在面板下方，把面板标题带回视野。 */
+function keepPanelInView(anchorId) {
+  const el = document.getElementById(anchorId);
+  if (!el) return;
+  const top = el.getBoundingClientRect().top;
+  if (top < 0) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+let rankRows = [];
+let rankExpanded = false;
+
 function renderRanking(rows) {
+  rankRows = rows;
   const el = document.getElementById("rankList");
-  if (!rows.length) { el.innerHTML = '<div class="empty">这段时间没有 PR/Issue 作者记录</div>'; return; }
-  el.innerHTML = rows.map((r, i) => `
-    <div class="rank-row">
-      <span class="login">${i + 1}. ${r.login}</span>
-      <span class="count">${r.count} 次</span>
-    </div>`).join("");
+  const moreBar = document.getElementById("rankMoreBar");
+  const topLink = document.getElementById("rankToggleTop");
+
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">这段时间没有 PR/Issue 作者记录</div>';
+    moreBar.hidden = topLink.hidden = true;
+    return;
+  }
+
+  const shown = rankExpanded ? rows : rows.slice(0, RANK_COLLAPSED);
+  // 先记下旧次数，重建后从旧值滚到新值（新出现的行没有旧值，直接落值）
+  const prevCounts = new Map();
+  for (const row of el.children) {
+    const c = row.querySelector(".count");
+    if (c) prevCounts.set(row.dataset.login, Number(c.dataset.v));
+  }
+
+  // 名次单独成列：FLIP 靠 data-login 认人，序号变了不影响它认行
+  flip(el, (row) => row.dataset.login, () => {
+    el.innerHTML = shown.map((r, i) => `
+      <div class="rank-row" data-login="${r.login}">
+        <span class="login">${i + 1}. ${r.login}</span>
+        <span class="count" data-v="${r.count}" data-prev="${prevCounts.has(r.login) ? prevCounts.get(r.login) : ""}">${r.count} 次</span>
+      </div>`).join("");
+  });
+
+  // 只给名次变化或数值变化的行做数字补间：10 行全部跑 rAF 会明显拖慢切换
+  for (const row of el.children) {
+    const c = row.querySelector(".count");
+    if (!c || c.dataset.prev === "") continue;
+    const from = Number(c.dataset.prev), to = Number(c.dataset.v);
+    if (from === to) continue;
+    countUp(c, from, to, (v) => `${Math.round(v)} 次`);
+  }
+
+  const hasMore = rows.length > RANK_COLLAPSED;
+  moreBar.hidden = !hasMore;
+  topLink.hidden = !hasMore;
+  if (hasMore) {
+    const label = rankExpanded ? "收起 ↑" : `展开全部 ${rows.length} 人 ↓`;
+    document.getElementById("rankToggleBottom").textContent = label;
+    topLink.textContent = label;
+  }
+}
+
+function toggleRank() {
+  rankExpanded = !rankExpanded;
+  renderRanking(rankRows);
+  if (!rankExpanded) keepPanelInView("rankToggleTop");
 }
 
 function renderStream(rows) {
@@ -266,24 +653,82 @@ function renderStream(rows) {
   }).join("");
 }
 
+// 仓库活跃度气泡：全局跟随鼠标，不受任何父级 overflow/stacking 限制
+(function initBarTip() {
+  const tip = document.getElementById("barTip");
+  document.addEventListener("mouseover", (e) => {
+    const seg = e.target.closest(".seg-wrap[data-tip]");
+    if (!seg) return;
+    tip.textContent = seg.dataset.tip;
+    tip.style.display = "block";
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (tip.style.display !== "block") return;
+    tip.style.left = e.clientX + "px";
+    tip.style.top  = (e.clientY - 2) + "px";
+  });
+  document.addEventListener("mouseout", (e) => {
+    if (!e.target.closest(".seg-wrap[data-tip]")) return;
+    if (e.relatedTarget && e.relatedTarget.closest(".seg-wrap[data-tip]")) return;
+    tip.style.display = "none";
+  });
+})();
+
+let loadToken = 0;   // 快速切换仓库/日期时，丢弃已经过期的那批响应
+
+/** 单个加载状态：整页一个，出现/消失不顶动内容。 */
+function setLoading(on, text) {
+  const box = document.getElementById("loadStatus");
+  const label = document.getElementById("loadStatusText");
+  if (text != null) label.textContent = text;
+  box.classList.toggle("on", on);
+}
+
+/**
+ * 五个面板各自请求、各自渲染，不再 Promise.all 一起等。
+ * 原来必须等最慢的那个请求回来才统一出图，所以整页会先僵住、再同时跳变；
+ * 拆开之后先回来的先动，感知上快很多，也更容易看清是哪块在等。
+ */
 async function loadAll() {
-  document.getElementById("kpis").innerHTML = '<div class="loading">加载中…</div>';
-  try {
-    const [s, repos, ranking, tl, stream] = await Promise.all([
-      fetchJson("/api/summary"),
-      fetchJson("/api/repos"),
-      fetchJson("/api/contributors", { limit: 10 }),
-      fetchJson("/api/timeline"),
-      fetchJson("/api/events", { limit: 20 }),
-    ]);
-    renderKpis(s);
-    renderTimeline(tl);
-    renderRepos(repos);
-    renderRanking(ranking);
-    renderStream(stream);
-  } catch (e) {
-    document.getElementById("kpis").innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
-  }
+  const token = ++loadToken;
+  const pending = new Set(["汇总", "仓库", "排行", "热力", "事件"]);
+  setLoading(true, "加载中…");
+
+  const done = (name) => {
+    pending.delete(name);
+    if (token === loadToken && pending.size) {
+      setLoading(true, `加载中…（还差 ${pending.size} 项）`);
+    }
+  };
+
+  const task = (name, path, params, render) =>
+    fetchJson(path, params)
+      .then((data) => { if (token === loadToken) render(data); })
+      .catch((e) => { if (token === loadToken) console.warn(name, e); })
+      .finally(() => done(name));
+
+  await Promise.all([
+    task("汇总", "/api/summary", null, renderKpis),
+    task("仓库", "/api/repos", null, renderRepos),
+    // 取全量：展开/收起在前端切片，避免点“展开”时再跑一趟请求。
+    // 单个时间窗内作者数最多几百，传输量可忽略
+    task("排行", "/api/contributors", { limit: "0" }, renderRanking),
+    task("热力", "/api/timeline", null, renderTimeline),
+    task("事件", "/api/events", { limit: 20 }, renderStream),
+  ]);
+
+  if (token !== loadToken) return;
+  updateRepoHeading();
+  setLoading(false);
+}
+
+function updateRepoHeading() {
+  // 选中单个仓库时，标题点明当前口径，避免误读成"全社区还是只剩一个仓库"
+  const el = document.getElementById("repoHeading");
+  if (!el) return;
+  el.innerHTML = selectedRepo
+    ? `仓库活跃度 <span class="hint">当前仅显示 ${selectedRepo}</span>`
+    : "仓库活跃度";
 }
 
 document.getElementById("rangeBar").addEventListener("click", (e) => {
@@ -308,6 +753,36 @@ function applyCustomRange() {
 document.getElementById("fromInput").addEventListener("change", applyCustomRange);
 document.getElementById("toInput").addEventListener("change", applyCustomRange);
 
+// 图表类型只影响渲染，不重新请求数据
+document.getElementById("chartTypeSelect").addEventListener("change", (e) => {
+  chartType = e.target.value;
+  renderTimeline(lastTimelineRows);
+});
+
+document.getElementById("repoSelect").addEventListener("change", (e) => {
+  selectedRepo = e.target.value;
+  loadAll();
+});
+
+async function loadRepoOptions() {
+  // 选项来自全表 distinct，跟时间范围无关，所以只在页面初始化时拉一次
+  try {
+    const res = await fetch("/api/repo-list");
+    if (!res.ok) return;
+    const repos = await res.json();
+    const sel = document.getElementById("repoSelect");
+    sel.insertAdjacentHTML("beforeend",
+      repos.map(r => `<option value="${r}">${r}</option>`).join(""));
+    if (selectedRepo) sel.value = selectedRepo;   // 回填 URL 带来的初值
+  } catch (e) { /* 拉不到就只留「全部仓库」，不影响主数据 */ }
+}
+
+// 展开/收起：标题旁和底部两个入口指向同一个状态
+["repoToggleTop", "repoToggleBottom"].forEach(id =>
+  document.getElementById(id).addEventListener("click", toggleRepos));
+["rankToggleTop", "rankToggleBottom"].forEach(id =>
+  document.getElementById(id).addEventListener("click", toggleRank));
+
 document.getElementById("streamToggle").addEventListener("click", () => {
   const el = document.getElementById("stream");
   const open = el.classList.toggle("open");
@@ -324,9 +799,22 @@ document.getElementById("streamToggle").addEventListener("click", () => {
       b.classList.toggle("active", b.dataset.days === days);
     });
   }
+  const repo = p.get("repo");
+  if (repo) selectedRepo = repo;
 })();
 
+loadRepoOptions();
 loadAll();
+
+// 页脚的数据更新日期：跟着 by_repo.csv 的实际生成时间走，不写死
+(async function loadMeta() {
+  try {
+    const res = await fetch("/api/meta");
+    if (!res.ok) return;
+    const m = await res.json();
+    if (m.updated_at) document.getElementById("updatedAt").textContent = m.updated_at;
+  } catch (e) { /* 拿不到就保持占位符 */ }
+})();
 </script>
 </body>
 </html>

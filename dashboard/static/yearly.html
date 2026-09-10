@@ -53,14 +53,33 @@
   td.login a:hover { color: var(--accent-dark); }
   tr:hover td { background: var(--accent-light); }
 
-  .search { margin-bottom: 16px; }
+  .search { margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .search input {
-    width: 100%; max-width: 280px;
+    flex: 1 1 200px; max-width: 280px;
     border: 1px solid var(--border); border-radius: 6px;
     padding: 6px 10px; font-size: 13px;
   }
+  .search select {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font-size: 13px;
+    color: var(--text); background: var(--panel);
+    cursor: pointer; max-width: 220px;
+  }
+  .search select:focus, .search input:focus { outline: none; border-color: var(--accent); }
+  .search .count { font-size: 12px; color: var(--muted); margin-left: auto; }
 
   .empty, .loading { color: var(--muted); font-size: 13px; padding: 24px 0; }
+
+  /* 页脚说明 */
+  .site-footer {
+    margin-top: 48px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; line-height: 1.9; color: var(--muted);
+  }
+  .site-footer .row { margin: 0; }
+  .site-footer a { color: var(--accent-dark); text-decoration: none; }
+  .site-footer a:hover { text-decoration: underline; }
+
 </style>
 </head>
 <body>
@@ -74,10 +93,20 @@
   <div class="panel">
     <div class="search">
       <input type="text" id="searchInput" placeholder="搜索用户名…">
+      <select id="repoSelect" title="按仓库筛选年度排行">
+        <option value="">全部仓库</option>
+      </select>
+      <span class="count" id="rowCount"></span>
     </div>
 
     <div id="tableWrap"><div class="loading">加载中…</div></div>
   </div>
+  <footer class="site-footer">
+    <p class="row">数据来源：DeepModeling 组织下各 GitHub 开源仓库公开记录，
+      每日自动抓取汇总，最近更新于 <span id="updatedAt">—</span>。</p>
+    <p class="row">统计口径受限于 GitHub API 与抓取窗口，数值仅供参考，不作为考核依据。</p>
+    <p class="row">本看板由 AISI 开源社区部门维护，如有疑问或数据勘误，请通过飞书联系 18376072883。</p>
+  </footer>
 </div>
 
 <script>
@@ -108,6 +137,13 @@ function render() {
     if (av > bv) return 1 * sortDir;
     return 0;
   });
+
+  const countEl = document.getElementById("rowCount");
+  if (countEl) {
+    countEl.textContent = filtered.length
+      ? `${filtered.length} 位贡献者${selectedRepo ? ` · ${selectedRepo}` : ""}`
+      : "";
+  }
 
   if (!filtered.length) {
     document.getElementById("tableWrap").innerHTML = '<div class="empty">没有匹配的贡献者</div>';
@@ -146,19 +182,68 @@ function render() {
   });
 }
 
+let selectedRepo = "";
+let repoOptionsFilled = false;
+let loadToken = 0;
+
 async function load() {
+  const token = ++loadToken;
+  document.getElementById("tableWrap").innerHTML = '<div class="loading">加载中…</div>';
   try {
-    const res = await fetch("/api/yearly");
+    const p = new URLSearchParams();
+    if (selectedRepo) p.set("repo", selectedRepo);
+    const res = await fetch(`/api/yearly?${p.toString()}`);
     if (!res.ok) throw new Error(`请求失败：${res.status}`);
-    rows = await res.json();
+    const data = await res.json();
+    if (token !== loadToken) return;   // 快速连点下拉时丢弃过期响应
+
+    // by_repo.csv 缺失时后端退回旧格式（纯数组），此时没有仓库维度可筛
+    if (Array.isArray(data)) {
+      rows = data;
+      const sel = document.getElementById("repoSelect");
+      sel.disabled = true;
+      sel.title = "缺少 by_repo.csv，无法按仓库筛选";
+    } else {
+      rows = data.rows || [];
+      if (!repoOptionsFilled) {
+        // 选项只在首次填充：按仓库筛选后返回的 repos 仍是全集，但没必要重复渲染
+        const sel = document.getElementById("repoSelect");
+        sel.insertAdjacentHTML("beforeend",
+          (data.repos || []).map(r => `<option value="${r}">${r}</option>`).join(""));
+        sel.value = selectedRepo;
+        repoOptionsFilled = true;
+      }
+    }
     render();
   } catch (e) {
+    if (token !== loadToken) return;
     document.getElementById("tableWrap").innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
   }
 }
 
 document.getElementById("searchInput").addEventListener("input", render);
+document.getElementById("repoSelect").addEventListener("change", (e) => {
+  selectedRepo = e.target.value;
+  load();
+});
+
+// 支持从首页带着仓库跳过来：/yearly?repo=deepmd-kit
+(function initFromUrl() {
+  const repo = new URLSearchParams(location.search).get("repo");
+  if (repo) selectedRepo = repo;
+})();
+
 load();
+
+// 页脚的数据更新日期：跟着 by_repo.csv 的实际生成时间走，不写死
+(async function loadMeta() {
+  try {
+    const res = await fetch("/api/meta");
+    if (!res.ok) return;
+    const m = await res.json();
+    if (m.updated_at) document.getElementById("updatedAt").textContent = m.updated_at;
+  } catch (e) { /* 拿不到就保持占位符 */ }
+})();
 </script>
 </body>
 </html>
