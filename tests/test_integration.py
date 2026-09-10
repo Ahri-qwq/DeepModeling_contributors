@@ -89,15 +89,12 @@ def mk_repo(name="tiny"):
 
 
 def _current_window_date_cst() -> str:
-    """当前时刻所属日报窗口的结束日（东八区日期字符串）。
+    """当前时刻所属日报窗口的日期（东八区）。
 
-    daily_range(day) 返回 [day-1 0:00, day 0:00) 东八区半开区间，
-    即 day 是窗口结束日。_report_date 无 --date 时返回今天，
-    对应昨天落库的事件窗口。
-
-    锚点 DAILY_ANCHOR_HOUR=0：任何时刻，当天 0 点之后的落库都属于
-    当天的窗口（daily_range(today)）。这里不需要 DAILY_ANCHOR_HOUR
-    的分支判断，直接返回今天即可——与 _report_date 保持一致。
+    日报窗口锚定当天 0 点（整个自然日），"此刻"落在哪个窗口取决于当前时刻：
+    此刻的 CST 小时数必然 >= 0（锚点），所以此刻永远已经过了"今天"窗口的
+    锚点，落在明天的窗口（daily_range(tomorrow)）里。
+    不能写死钟点——基线时刻是"现在"，硬编码钟点在别的时段跑会失效。
     """
     from contributors.notify.period import CST, DAILY_ANCHOR_HOUR
     now_cst = datetime.now(timezone.utc).astimezone(CST)

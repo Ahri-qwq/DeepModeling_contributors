@@ -32,11 +32,12 @@ rem  report, so the push is not blocked by one unreachable repo.
 rem  The outer retry below only fires when the whole run failed
 rem  (no repo list, no network).
 rem
-rem  The daily report window is anchored at 20:00 CST and decided by
-rem  the DATE, not by when the push runs: the 8-13 report is always
-rem  8-12 20:00 ~ 8-13 20:00. Pushing twice the same day therefore
-rem  yields identical content, and any re-fetch inside the window is
-rem  picked up automatically. To re-push an earlier day:
+rem  The daily report window is anchored at 0:00 CST (the full
+rem  calendar day) and decided by the DATE, not by when the push
+rem  runs: the 8-13 report is always 8-13 0:00 ~ 8-13 24:00.
+rem  Pushing twice the same day therefore yields identical content,
+rem  and any re-fetch inside the window is picked up automatically.
+rem  To re-push an earlier day:
 rem    py -3.12 -m contributors --daily --only-notify --notify ^
 rem       --date 2026-08-12
 rem
@@ -47,9 +48,11 @@ rem
 rem  Suggested schedule (full run takes ~25 min, so leave margin):
 rem    18:00  daily_report.bat --fetch
 rem    10:03  daily_report.bat --push
-rem  The fetch MUST finish before the 20:00 window closes, otherwise
+rem  The fetch MUST finish before the 24:00 window closes, otherwise
 rem  its events land in the next day's window and today's report is
-rem  empty. 18:00 leaves ~2h of margin for retries. Feishu docs
+rem  missing that data (it rolls into tomorrow's report instead — not
+rem  lost, not duplicated, just not attributed to the exact day it
+rem  happened). 18:00 leaves ~6h of margin for retries. Feishu docs
 rem  advise avoiding exact hour / half-hour marks (rate limit
 rem  100/min, 5/sec), hence 10:03 rather than 10:00.
 rem  The fetch step has no such constraint - it sends nothing.

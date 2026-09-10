@@ -34,5 +34,9 @@ dist/
 
 # GitHub token（backup_data.sh 的凭据，SSH 改造后已不再 source，但文件仍在）
 .token.env
+# 通配兜底：token_tmp.env 这类临时命名不该因为没命中上面两条就漏进版本库。
+# 凭据文件宁可多拦不可少拦。
+*token*.env
+*.env.local
 # 手动修改脚本前的备份，有 git 就不需要
 *.sh.bak
