@@ -15,9 +15,11 @@
 - 同步粒度：贡献者×仓库，与 by_repo.csv 逐行对应（不做按仓库聚合）。
   唯一键是 repo+login+email 三元组——仅用 repo+login 时，96 个未关联 GitHub
   账号的贡献者（login 为空）在同一仓库内全部碰撞成同一个键，导致冗余行和
-  陈旧数据（2026-09-10 修复）。已有行用 record_id 匹配更新，没有的行新增。
-  首跑全量写入，后续只动变化的行。（曾短暂实现过按 repo 聚合成一行的版本，
-  2026-09-09 按实际展示需求改回逐行同步，group_by_repo 保留供统计场景复用。）
+  陈旧数据（2026-09-10 修复）。已有行用 record_id 匹配更新，没有的行新增，
+  表格里有而 csv 里没有的删除——统计窗口是滚动的一年，贡献者会陆续掉出窗口，
+  不删会在表格里永久堆积。表格内容是近一年快照，不是累积档案。
+  （曾短暂实现过按 repo 聚合成一行的版本，2026-09-09 按实际展示需求改回
+  逐行同步，group_by_repo 保留供统计场景复用。）
 - 失败只记日志不影响主流程：调用方（daily_report.sh）捕获异常打 log，绝不
   让同步失败拖垮 --fetch 的成功状态。
 """
@@ -206,6 +208,28 @@ class BitableClient:
             )
         return len(records)
 
+    def batch_delete(self, record_ids: list[str]) -> int:
+        """批量删除。返回成功条数。
+
+        用于清掉「表格里有、CSV 里已没有」的残留行——统计窗口是滚动的一年，
+        贡献者会随时间陆续掉出窗口，不删就会在表格里永久堆积。
+        """
+        if not record_ids:
+            return 0
+        path = (
+            f"/open-apis/bitable/v1/apps/{self.app_token}"
+            f"/tables/{self.table_id}/records/batch_delete"
+        )
+        # batch_delete 的载荷是 {"records": [id, ...]}，不是 {"record_ids": ...}
+        data = self._request("POST", path, {"records": record_ids})
+        if data.get("code") != 0:
+            raise BitableError(
+                f"batch_delete 失败 code={data.get('code')} "
+                f"msg={data.get('msg')}" + (f"（{_hint(data.get('code'))}）"
+                                            if _hint(data.get('code')) else "")
+            )
+        return len(record_ids)
+
     def rename_table(self, name: str) -> None:
         """改数据表名字。用于每天把表名刷成含日期的展示名。
 
@@ -341,12 +365,18 @@ def sync(csv_path: Path, client: BitableClient) -> dict:
     """把 csv 内容增量同步进表。返回结果统计。
 
     流程：读现有记录（按 repo+login+email 建索引）→ 读 csv（逐行，不聚合）→
-    比较 → 新增 / 更新。表格若为空（首跑），全量新增。非空则按
-    repo+login+email 匹配：有则更新字段，无则新增。
+    比较 → 新增 / 更新 / 删除。表格若为空（首跑），全量新增。非空则按
+    repo+login+email 匹配：有则更新字段，无则新增；表格里有而 csv 里没有的
+    一并删除。
+
+    删除是必要的：统计窗口是滚动的一年，贡献者会随时间陆续掉出窗口，只做
+    upsert 的话这些行会在表格里永久堆积（2026-09-10 前实测已积累 2 行）。
     """
     rows = read_csv(csv_path)
     if not rows:
-        return {"added": 0, "updated": 0, "skipped": 0}
+        # 空 csv 可能是 fetch 异常产出，此时不该把整张表删空
+        log.warning("csv 为空，跳过同步（不删除表格内容）")
+        return {"added": 0, "updated": 0, "deleted": 0, "skipped": 0}
 
     existing = client.list_records()
     by_key: dict[str, str] = {}
@@ -359,19 +389,26 @@ def sync(csv_path: Path, client: BitableClient) -> dict:
 
     to_create = []
     to_update = []
+    matched_ids = set()
     for row in rows:
         key = _row_key(row)
         fields = {k: _to_field_value(v) for k, v in row.items() if v is not None}
         if key in by_key:
             to_update.append({"record_id": by_key[key], "fields": fields})
+            matched_ids.add(by_key[key])
         else:
             to_create.append({"fields": fields})
 
+    # 表格里有、csv 里没有 → 已掉出统计窗口，删除
+    to_delete = [rid for key, rid in by_key.items() if rid not in matched_ids]
+
     added = client.batch_create(to_create) if to_create else 0
     updated = client.batch_update(to_update) if to_update else 0
-    # skipped：表格里有、但 CSV 里没有的行（历史残留）
-    skipped = len(existing) - len(to_update)
-    return {"added": added, "updated": updated, "skipped": skipped}
+    deleted = client.batch_delete(to_delete) if to_delete else 0
+
+    skipped = len(existing) - len(to_update) - deleted
+    return {"added": added, "updated": updated, "deleted": deleted,
+            "skipped": skipped}
 
 
 def _make_client_from_env() -> BitableClient:
@@ -424,8 +461,9 @@ def main() -> int:
     except BitableError as exc:
         log.warning("bitable sync failed (non-fatal): %s", exc)
         return 0
-    log.info("同步完成: 新增 %s 行, 更新 %s 行, 跳过 %s 行",
-             result["added"], result["updated"], result["skipped"])
+    log.info("同步完成: 新增 %s 行, 更新 %s 行, 删除 %s 行, 跳过 %s 行",
+             result["added"], result["updated"], result["deleted"],
+             result["skipped"])
 
     # 表名刷成含日期的展示名，与同步是否成功解耦——改名失败不影响
     # 已经写成功的数据，只记警告。
