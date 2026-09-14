@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
+from ..identity import is_bot
 from .card import SIZE_LIMIT, _escape
 
 # 排行榜取前几名。周报取 5，月报取 10 —— 月度数据量大（实测一个月
@@ -175,8 +176,12 @@ def build_period(events: list, label: str, rng: str,
         elif ev.kind == "issue":
             d.issue_count += 1
 
-        # author 为 null 的事件（已删号用户）不进榜，否则会冒出空名字
-        if ev.author_login:
+        # author 为 null 的事件（已删号用户）不进榜，否则会冒出空名字。
+        # bot 同样不进榜：2026-09-14 给提交补上作者后，njzjz-bot 以 36 次
+        # 活动、pre-commit-ci[bot] 以 13 次直接占据榜首前三，把真人挤下去。
+        # 机器批量提交与人的贡献不可比，而这个榜是发给群里看的。
+        # 计数仍按全部事件算（上面那几个 count），只有榜单和贡献者数排除。
+        if ev.author_login and not is_bot(ev.author_login):
             by_author[ev.author_login] = by_author.get(ev.author_login, 0) + 1
         if ev.repo:
             by_repo[ev.repo] = by_repo.get(ev.repo, 0) + 1
