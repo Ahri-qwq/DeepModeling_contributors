@@ -204,10 +204,13 @@ def render_text(d: PeriodDigest) -> str:
         parts.append(f"{d.issue_count} 个 issue")
     lines.append(" · ".join(parts) if parts else "无活动")
 
-    # 看板链接：环境变量未配置时静默跳过
+    # 看板链接：环境变量未配置时静默跳过。文案跟日报保持一致 —— 同一个群里
+    # 日报周报交替出现，同一个看板在两种卡片里叫不同名字，读的人会以为是
+    # 两个不同的东西。多维表格链接故意不放：那张表是滚动一年的快照，与
+    # "上周/上月"的周期对不上，并排出现反而误导。
     dashboard_url = os.environ.get("DASHBOARD_URL", "")
     if dashboard_url:
-        lines.append(f"[查看完整看板]({dashboard_url})")
+        lines.append(f"[查看可互动图表看板]({dashboard_url})")
 
     if d.contributor_total:
         lines.append(f"共 {d.contributor_total} 位贡献者参与")

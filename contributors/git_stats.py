@@ -38,11 +38,14 @@ AI_LOG_FORMAT = (
     f"%H{RECORD_SEP}%aE{RECORD_SEP}%aI{RECORD_SEP}%B{RECORD_TERM}"
 )
 
-# 第二期事件留存专用格式：SHA、author date、提交标题首行。
+# 第二期事件留存专用格式：SHA、author date、作者邮箱、提交标题首行。
 # 与 LOG_FORMAT 分开而不是给它加字段：那个格式串被 parse_git_log 的三处
 # 调用共用，而 parse_git_log 是第一期修过四个缺陷的地方，动它风险不划算。
 # 多跑一次 git log 实测 0.1 秒，买第一期计数路径的零改动很值。
-EVENT_LOG_FORMAT = f"%H{RECORD_SEP}%aI{RECORD_SEP}%s"
+#
+# 邮箱插在标题**之前**：标题是用户输入、可能含 \x1f，解析靠"标题在最后、
+# 剩余部分整体 join"容错。邮箱若放末尾，含分隔符的标题会把它切碎。
+EVENT_LOG_FORMAT = f"%H{RECORD_SEP}%aI{RECORD_SEP}%aE{RECORD_SEP}%s"
 
 _COAUTHOR_RE = re.compile(
     r"^\s*Co-authored-by:\s*(.+?)\s*<([^>]+)>\s*$",
@@ -245,11 +248,16 @@ def collect_ai_coauthors(repo, cm, cfg) -> tuple:
 
 
 def parse_commit_events(text: str, repo_name: str, org: str,
-                        since=None, until=None) -> list:
+                        since=None, until=None, resolver=None) -> list:
     """解析事件格式的 git log，返回 Event 列表。
 
     窗口过滤与主统计同口径（author date、半开区间），这样战报里的
     提交数与 CSV 的 commits 列量纲一致。
+
+    resolver 用来把作者邮箱归并成 GitHub login。传 None 时 login 留空 ——
+    周月报的贡献者数与排行榜会因此漏掉提交者（2026-09-14 之前全库 13002
+    条 commit 的 author_login 全是 NULL，就是这个原因）。归并不出的邮箱
+    同样留空：宁可少算一人，也不能把两个人合成一个。
     """
     from .events import commit_event
 
@@ -261,16 +269,24 @@ def parse_commit_events(text: str, repo_name: str, org: str,
         parts = line.split(RECORD_SEP)
         if len(parts) < 3:
             continue
-        sha, when, title = parts[0], parts[1], RECORD_SEP.join(parts[2:])
+        # 兼容两种字段数：4 段是带邮箱的新格式，3 段是旧格式（旧缓存、
+        # 旧测试）。标题一律取末尾剩余部分整体 join —— 它可能含分隔符。
+        if len(parts) >= 4:
+            sha, when, email = parts[0], parts[1], parts[2]
+            title = RECORD_SEP.join(parts[3:])
+        else:
+            sha, when, email = parts[0], parts[1], ""
+            title = RECORD_SEP.join(parts[2:])
         if not sha:
             continue
         if not _author_date_in_window(when, since, until):
             continue
-        out.append(commit_event(repo_name, org, sha, title, when))
+        login = resolver.resolve(email) if (resolver and email) else None
+        out.append(commit_event(repo_name, org, sha, title, when, login))
     return out
 
 
-def collect_commit_events(repo, cm, cfg) -> list:
+def collect_commit_events(repo, cm, cfg, resolver=None) -> list:
     """跑一次 git log 取提交事件。
 
     与 collect_git_stats 分开跑，理由见 EVENT_LOG_FORMAT 的说明。
@@ -283,7 +299,8 @@ def collect_commit_events(repo, cm, cfg) -> list:
         cwd=cm.repo_path(repo.name), timeout=LOG_TIMEOUT,
     )
     return parse_commit_events(text, repo.name, cfg.org,
-                               since=cfg.since, until=cfg.until)
+                               since=cfg.since, until=cfg.until,
+                               resolver=resolver)
 
 
 def _run_git(args: list, cwd: Optional[Path] = None, timeout: int = 300) -> str:

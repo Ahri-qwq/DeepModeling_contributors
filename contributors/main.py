@@ -346,7 +346,10 @@ def process_repo(repo, cm, cfg, client, resolver) -> tuple:
     events = []
     if getattr(cfg, "events", True):
         try:
-            events.extend(collect_commit_events(repo, cm, cfg))
+            # 传 resolver：提交作者要归并成 login，否则周月报的贡献者数
+            # 与排行榜只算 PR/issue 作者。映射此时已由上面的
+            # collect_api_stats 填好，时序不能颠倒。
+            events.extend(collect_commit_events(repo, cm, cfg, resolver))
         except (GitError, OSError) as exc:
             print(f"  提示：{repo.name} 提交事件收集失败，战报将缺该仓库（{exc}）")
         if client is not None:
