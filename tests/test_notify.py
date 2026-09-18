@@ -265,6 +265,95 @@ class TestRenderText:
         assert "今年至今：" in text and "个仓库" not in text
 
 
+class TestCategorySections:
+    """日报按意图分区（新功能 / 修复 / 重构 ...）而不是按 PR 状态分区。
+
+    运营关心的是「社区在干什么」，不是「PR 合并了还是新建」。
+    状态信息不丢，挂在每条末尾。
+    """
+
+    def test_sections_are_named_by_category(self):
+        evs = [_pr(1, "merged", title="feat: 新的东西"),
+               _pr(2, "merged", title="fix: 修个 bug")]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        assert "**新功能**" in text
+        assert "**修复**" in text
+        # 不再按状态分区
+        assert "**合并的 PR**" not in text
+        assert "**新建的 PR**" not in text
+
+    def test_new_feature_section_comes_before_fix(self):
+        evs = [_pr(1, "merged", title="fix: 修复"),
+               _pr(2, "merged", title="feat: 新功能")]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        assert text.index("**新功能**") < text.index("**修复**")
+
+    def test_other_section_comes_last(self):
+        evs = [_pr(1, "merged", title="认不出来的标题"),
+               _pr(2, "merged", title="fix: 修复")]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        assert text.index("**修复**") < text.index("**其他**")
+
+    def test_empty_categories_are_hidden(self):
+        evs = [_pr(1, "merged", title="feat: 只有新功能")]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        assert "**新功能**" in text
+        for absent in ("**修复**", "**重构**", "**性能**",
+                       "**测试**", "**文档**", "**工程**", "**其他**"):
+            assert absent not in text
+
+    def test_merged_and_opened_prs_share_one_category(self):
+        """同一意图的 PR 不因状态被拆到两个分区。"""
+        evs = [_pr(1, "merged", title="feat: 已合并"),
+               _pr(2, "opened", title="feat: 新建的")]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        assert text.count("**新功能**") == 1
+
+    def test_pr_state_is_still_visible(self):
+        """按意图分组后，合并/新建仍要逐条看得出来。
+
+        标题故意用中性词（alpha/beta）：用「已合并」这种标题会让断言
+        命中标题本身，测不出状态标注到底在不在。
+        """
+        evs = [_pr(1, "merged", title="feat: alpha"),
+               _pr(2, "opened", title="feat: beta")]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        block = text.split("**新功能**", 1)[1]
+        line1 = [ln for ln in block.splitlines() if "alpha" in ln][0]
+        line2 = [ln for ln in block.splitlines() if "beta" in ln][0]
+        assert "合并" in line1, f"合并状态丢了：{line1!r}"
+        assert "新建" in line2, f"新建状态丢了：{line2!r}"
+
+    def test_issue_lines_have_no_pr_state(self):
+        """issue 不是 PR，不该被标上合并/新建。"""
+        text = card.render_text(build(UpsertResult([_issue(100)], [])))
+        block = text.split("**新增 issue**", 1)[1]
+        for ln in block.splitlines():
+            assert "合并" not in ln
+            assert "新建" not in ln
+
+    def test_each_category_capped_at_max_items(self):
+        evs = [_pr(n, "merged", title=f"fix: 修复{n}") for n in range(1, 12)]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        shown = [ln for ln in text.splitlines() if "deepmd-kit #" in ln]
+        assert len(shown) == MAX_ITEMS
+        assert f"还有 {11 - MAX_ITEMS} 条" in text
+
+    def test_cap_applies_per_category_not_globally(self):
+        """每类各自 5 条，不是全卡片共 5 条。"""
+        evs = ([_pr(n, "merged", title=f"fix: 修{n}") for n in range(1, 8)]
+               + [_pr(n, "merged", title=f"feat: 新{n}") for n in range(20, 27)])
+        text = card.render_text(build(UpsertResult(evs, [])))
+        shown = [ln for ln in text.splitlines() if "deepmd-kit #" in ln]
+        assert len(shown) == MAX_ITEMS * 2
+
+    def test_issues_stay_in_their_own_section(self):
+        """issue 不参与意图分类（前缀规范度只有 9%）。"""
+        evs = [_pr(1, "merged", title="feat: 功能"), _issue(100)]
+        text = card.render_text(build(UpsertResult(evs, [])))
+        assert "**新增 issue**" in text
+
+
 class TestRenderCard:
     def test_produces_interactive_card(self):
         c = card.render(build(UpsertResult([_commit("a")], [])))
@@ -949,3 +1038,93 @@ class TestReportDate:
                      until=_dt_mod.datetime(2026, 12, 31, tzinfo=_tz.utc),
                      include_forks="all", max_repo_size=0, date="2026-08-14")
         assert _report_date(cfg) == _d(2026, 8, 14)
+
+
+class TestPeriodPrBreakdown:
+    """周月报的「PR 动向」分区：仓库 × 意图矩阵。
+
+    和「活跃仓库」并列但口径不同 —— 那个数的是全部事件
+    （commit+PR+issue），这个只数 PR。同一个仓库两边数字不一样是正常的。
+    """
+
+    def _build(self, evs, top_n=5):
+        from contributors.notify.period import build_period
+        return build_period(evs, "上周", "09-07 ~ 09-13", top_n=top_n)
+
+    def test_breakdown_counts_by_repo_and_category(self):
+        evs = [_pr(1, "merged", repo="deepmd-kit", title="fix: a"),
+               _pr(2, "merged", repo="deepmd-kit", title="fix: b"),
+               _pr(3, "merged", repo="deepmd-kit", title="feat: c")]
+        d = self._build(evs)
+        assert d.pr_breakdown[0][0] == "deepmd-kit"
+        assert dict(d.pr_breakdown[0][1])["修复"] == 2
+        assert dict(d.pr_breakdown[0][1])["新功能"] == 1
+
+    def test_commits_and_issues_do_not_enter_breakdown(self):
+        """只统计 PR：commit 前缀规范度 44%、issue 只有 9%。"""
+        evs = [_pr(1, "merged", repo="r1", title="fix: x"),
+               _commit("sha1", repo="r1"), _issue(9, repo="r1")]
+        d = self._build(evs)
+        total = sum(n for _, n in d.pr_breakdown[0][1])
+        assert total == 1
+
+    def test_repos_sorted_by_pr_count(self):
+        evs = ([_pr(n, "merged", repo="few", title="fix: x") for n in range(1, 3)]
+               + [_pr(n, "merged", repo="many", title="fix: y") for n in range(10, 15)])
+        d = self._build(evs)
+        assert [r for r, _ in d.pr_breakdown] == ["many", "few"]
+
+    def test_breakdown_respects_top_n(self):
+        evs = [_pr(n, "merged", repo=f"repo{n}", title="fix: x") for n in range(1, 9)]
+        d = self._build(evs, top_n=5)
+        assert len(d.pr_breakdown) == 5
+
+    def test_repo_with_no_pr_is_absent(self):
+        evs = [_commit("sha1", repo="only-commits")]
+        d = self._build(evs)
+        assert d.pr_breakdown == []
+
+    def test_categories_sorted_by_count_desc(self):
+        evs = ([_pr(n, "merged", repo="r", title="fix: x") for n in range(1, 4)]
+               + [_pr(9, "merged", repo="r", title="feat: y")])
+        d = self._build(evs)
+        cats = [c for c, _ in d.pr_breakdown[0][1]]
+        assert cats[0] == "修复"
+
+
+class TestPeriodRenderBreakdown:
+    def _text(self, evs, top_n=5):
+        from contributors.notify.period import build_period, render_text
+        return render_text(build_period(evs, "上周", "09-07 ~ 09-13", top_n=top_n))
+
+    def test_section_is_rendered(self):
+        evs = [_pr(1, "merged", repo="deepmd-kit", title="fix: a")]
+        assert "**PR 动向**" in self._text(evs)
+
+    def test_section_absent_when_no_pr(self):
+        assert "**PR 动向**" not in self._text([_commit("s1")])
+
+    def test_line_says_pr_not_activity(self):
+        """措辞写「个 PR」，和上面「次活动」区分开，否则两个数字打架。"""
+        evs = [_pr(1, "merged", repo="deepmd-kit", title="fix: a")]
+        text = self._text(evs)
+        block = text.split("**PR 动向**", 1)[1]
+        assert "个 PR" in block
+        assert "次活动" not in block
+
+    def test_categories_listed_in_line(self):
+        evs = [_pr(1, "merged", repo="r", title="fix: a"),
+               _pr(2, "merged", repo="r", title="feat: b")]
+        block = self._text(evs).split("**PR 动向**", 1)[1]
+        assert "修复 1" in block
+        assert "新功能 1" in block
+
+    def test_appears_after_active_repos(self):
+        evs = [_pr(1, "merged", repo="r", title="fix: a")]
+        text = self._text(evs)
+        assert text.index("**活跃仓库**") < text.index("**PR 动向**")
+
+    def test_no_detail_lines(self):
+        """周月报只给画像，不列 PR 明细（明细去看板）。"""
+        evs = [_pr(1, "merged", repo="r", title="fix: 某个具体标题")]
+        assert "某个具体标题" not in self._text(evs)

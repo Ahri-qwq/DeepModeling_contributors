@@ -6,6 +6,7 @@
 import json
 import os
 
+from .classify import group_by_category
 from .digest import MAX_ITEMS, Digest
 
 # 飞书请求体上限 20 KB（官方文档）。留 2 KB 余量给签名等顶层字段，
@@ -28,11 +29,17 @@ def _line(item, kind: str) -> str:
     """
     title = _escape(item.title) or "(无标题)"
     who = f" @{_escape(item.author)}" if getattr(item, "author", "") else ""
+    # 按意图分区后，合并/新建只能靠条目自己说 —— 以前这个信息
+    # 由分区名（「合并的 PR」「新建的 PR」）承载。只标 PR：commit
+    # 没有这个概念，issue 单独成区不会混淆。
+    tag = {"merged": "合并", "opened": "新建", "open": "新建"}.get(
+        getattr(item, "state", "") or "", "")
+    mark = f"[{tag}] " if tag else ""
     if item.number is None:
         # commit 无编号，链接挂仓库名
         ref = f"[{item.repo}]({item.url})" if item.url else item.repo
-        return f"· {ref}\n　{title}{who}"
-    return f"· [{item.repo} #{item.number}]({item.url})\n　{title}{who}"
+        return f"· {ref}\n　{mark}{title}{who}"
+    return f"· [{item.repo} #{item.number}]({item.url})\n　{mark}{title}{who}"
 
 
 def _escape(text: str) -> str:
@@ -244,13 +251,22 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     if bitable_url:
         lines.append(f"[查看一年内贡献者明细表格]({bitable_url})")
 
-    for title, items in (("合并的 PR", d.merged_prs),
-                         ("新建的 PR", d.opened_prs),
-                         ("新增 issue", d.issues)):
-        sec = _section(title, items, limit)
+    # PR 按「在干什么」分区，而不是按合并/新建。读日报的是运营，
+    # 他们要的是「社区最近在推新功能还是在修 bug」，不是 PR 的生命周期状态。
+    # 合并和新建合起来排，状态挂在每条末尾不丢。
+    # issue 不参与分类：实测近 90 天 issue 标题的前缀规范度只有 9%，
+    # 分出来大半是噪音，不如单独列一区。
+    for cat, items in group_by_category(
+            list(d.merged_prs) + list(d.opened_prs), key=lambda i: i.title):
+        sec = _section(cat, items, limit)
         if sec:
             lines.append("")
             lines.extend(sec)
+
+    sec = _section("新增 issue", d.issues, limit)
+    if sec:
+        lines.append("")
+        lines.extend(sec)
 
     # 兜底：当天没有任何 PR/issue 时，卡片就只剩一个提交数字，什么信息
     # 都没有（2026-08-12 实际推出过这样一条）。此时把 commit 列出来。

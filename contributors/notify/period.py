@@ -21,6 +21,8 @@ from .card import SIZE_LIMIT, _escape
 TOP_N_WEEKLY = 5
 TOP_N_MONTHLY = 10
 
+from .classify import classify_title
+
 CST = timezone(timedelta(hours=8))
 
 
@@ -35,6 +37,10 @@ class PeriodDigest:
     issue_count: int = 0
     top_contributors: list = field(default_factory=list)   # [(login, n)]
     top_repos: list = field(default_factory=list)          # [(repo, n)]
+    # 仓库 × 意图矩阵：[(repo, [(类别, n), ...]), ...]。
+    # 口径与 top_repos 不同 —— 那个数全部事件，这个只数 PR，
+    # 同一个仓库在两边的数字和排名都可能不一样。
+    pr_breakdown: list = field(default_factory=list)
     contributor_total: int = 0
 
     @property
@@ -181,6 +187,24 @@ def build_period(events: list, label: str, rng: str,
         if ev.repo:
             by_repo[ev.repo] = by_repo.get(ev.repo, 0) + 1
 
+    # PR 意图矩阵。只统计 PR：commit 前缀规范度 44%、issue 只有 9%，
+    # 拉进来大半是噪音；而且 commit 是过程不是意图（一个 PR 里混着
+    # 一堆 fix typo、address review），按它分类会让改错别字和重写求解器
+    # 占同样的权重。
+    pr_cats: dict = {}
+    for ev in events:
+        if ev.kind != "pr" or not ev.repo:
+            continue
+        cats = pr_cats.setdefault(ev.repo, {})
+        cat = classify_title(ev.title)
+        cats[cat] = cats.get(cat, 0) + 1
+    d.pr_breakdown = [
+        (repo, sorted(cats.items(), key=lambda kv: (-kv[1], kv[0])))
+        for repo, cats in sorted(
+            pr_cats.items(),
+            key=lambda kv: (-sum(kv[1].values()), kv[0]))[:top_n]
+    ]
+
     d.contributor_total = len(by_author)
     d.top_contributors = sorted(by_author.items(),
                                 key=lambda kv: (-kv[1], kv[0]))[:top_n]
@@ -227,6 +251,17 @@ def render_text(d: PeriodDigest) -> str:
         for i, (repo, n) in enumerate(d.top_repos, 1):
             lines.append(f"{i}. {_escape(repo)} · {n} 次活动")
 
+
+    # PR 动向：回答「这些仓库在干什么」，而上面的活跃榜只回答
+    # 「谁在动」。故意不写序号且措辞用「个 PR」：两个榜口径不同，
+    # 同一仓库两边数字不一样，写成同样的「1. xxx · N」会让人以为在打架。
+    if d.pr_breakdown:
+        lines.append("")
+        lines.append("**PR 动向**")
+        for repo, cats in d.pr_breakdown:
+            total = sum(n for _, n in cats)
+            lines.append(f"{_escape(repo)} · {total} 个 PR")
+            lines.append("　" + " · ".join(f"{c} {n}" for c, n in cats))
     return "\n".join(lines)
 
 

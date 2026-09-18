@@ -24,6 +24,10 @@ class Item:
     title: str
     url: str
     author: str = ""
+    # PR 的生命周期状态（merged / opened）。日报改成按意图分区后，
+    # 分区名不再承载这个信息（以前叫「合并的 PR」「新建的 PR」），
+    # 所以挂到条目上。commit 和 issue 不用，留空。
+    state: str = ""
 
 
 @dataclass
@@ -125,7 +129,8 @@ def _hours_between(iso: str, ref: datetime) -> Optional[float]:
 
 def _item(ev) -> Item:
     return Item(repo=ev.repo, number=ev.number, title=ev.title, url=ev.url,
-                author=ev.author_login or "")
+                author=ev.author_login or "",
+                state=ev.state if ev.kind == "pr" else "")
 
 
 def build(pending, last_notify_at: str = "",
@@ -156,7 +161,7 @@ def build(pending, last_notify_at: str = "",
     for chg in pending.state_changes:
         if chg.new_state == "merged":
             d.merged_prs.append(Item(chg.repo, chg.number, chg.title, chg.url,
-                                     chg.author_login or ""))
+                                     chg.author_login or "", state="merged"))
             merged_keys.add(chg.event_key)
 
     for ev in pending.new_events:
