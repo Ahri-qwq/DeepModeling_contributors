@@ -315,7 +315,7 @@ def render(d: Digest) -> dict:
     到半截会让人看不懂在说什么。真到了 1 条还超限（几乎不可能，除非
     单条标题极长），至少消息本身还发得出去。
     """
-    for limit in (MAX_ITEMS, 5, 3, 1):
+    for limit in (MAX_ITEMS, 3, 1):
         card = _build(d, limit)
         if len(json.dumps(card, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT:
             return card

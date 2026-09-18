@@ -9,7 +9,9 @@ from typing import Optional
 
 # 每类最多列几条。首次运行或长期未跑后重跑，可能一次涌进几百条事件，
 # 不截断会撑爆群消息（飞书请求体上限 20 KB）。
-MAX_ITEMS = 10
+# 定在 5 是可读性考虑而非体积考虑：群里每类列 10 条会把卡片拉得很长、
+# 重点反而不突出，多出来的折叠成"还有 N 条"，要细节去看板。
+MAX_ITEMS = 5
 
 CST = timezone(timedelta(hours=8))
 

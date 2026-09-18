@@ -175,7 +175,22 @@ class TestRenderText:
         prs = [_pr(n, "merged") for n in range(1, 26)]
         d = build(UpsertResult(prs, []))
         text = card.render_text(d)
-        assert "还有 15 条" in text
+        assert f"还有 {25 - MAX_ITEMS} 条" in text
+
+    def test_max_items_is_five(self):
+        """群里每类只列 5 条——10 条太长，刷屏且重点不突出。
+
+        这是产品决策不是实现细节，所以单独锁一个值；改条数时连同
+        这个测试一起改，避免有人顺手调常量而没人意识到卡片变长了。
+        """
+        assert MAX_ITEMS == 5
+
+    def test_section_lists_at_most_max_items(self):
+        prs = [_pr(n, "merged") for n in range(1, 26)]
+        text = card.render_text(build(UpsertResult(prs, [])))
+        # 列出来的条目行数就是 MAX_ITEMS，多的折叠进"还有 N 条"
+        shown = [ln for ln in text.splitlines() if "deepmd-kit #" in ln]
+        assert len(shown) == MAX_ITEMS
 
     def test_no_remainder_note_when_within_limit(self):
         prs = [_pr(n, "merged") for n in range(1, MAX_ITEMS + 1)]
@@ -267,7 +282,7 @@ class TestRenderCard:
     def test_normal_content_is_not_degraded(self):
         prs = [_pr(n, "merged") for n in range(1, 26)]
         c = card.render(build(UpsertResult(prs, [])))
-        assert "还有 15 条" in c["card"]["elements"][0]["text"]["content"]
+        assert f"还有 {25 - MAX_ITEMS} 条" in c["card"]["elements"][0]["text"]["content"]
 
 
 class TestSign:
@@ -614,7 +629,7 @@ class TestCommitFallback:
         """即使只有 commit，也不能无限列。"""
         d = build(UpsertResult([_commit(f"s{i}") for i in range(25)], []))
         text = card.render_text(d)
-        assert "还有 15 条" in text
+        assert f"还有 {25 - MAX_ITEMS} 条" in text
 
     def test_commit_line_links_to_commit(self):
         d = build(UpsertResult([_commit("abc123")], []))
