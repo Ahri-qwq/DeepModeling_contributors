@@ -379,9 +379,13 @@ def _row_key(row: dict) -> str:
     三元组 repo+login+email 在当前 by_repo.csv 的全部 749 行中经过验证完全
     唯一，而且两侧（CSV 行和表格 fields）都有这三列，可以对称计算。
     """
-    repo = str(row.get("repo", "")).strip()
-    login = str(row.get("login", "")).strip()
-    email = str(row.get("email", "")).strip()
+    # 必须走 `or ""` 而不是 get 的默认值：飞书对空文本列返回的是 None，
+    # 键是在的，默认值不生效，str(None) 会得到字面量 "None"。那样表格侧和
+    # csv 侧算出的键不同，每次同步都把这些行删了重建（实测 743 行里有 411
+    # 行中招：103 行 login 为空、308 行 email 为空）。
+    repo = str(row.get("repo") or "").strip()
+    login = str(row.get("login") or "").strip()
+    email = str(row.get("email") or "").strip()
     return f"{repo}\x1f{login}\x1f{email}"
 
 

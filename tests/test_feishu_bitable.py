@@ -217,3 +217,42 @@ def test_numeric_looking_login_and_email_stay_text(tmp_path):
     fields = client.created[0]["fields"]
     assert fields["login"] == "123456"
     assert fields["email"] == "789"
+
+
+def test_row_key_treats_missing_field_as_empty():
+    """飞书对空文本列返回 None，不是缺键——默认值不生效。
+
+    `row.get("login", "")` 只在键不存在时给默认值；键在而值为 None 时返回
+    None，str(None) 得到字面量 "None"，于是表格侧算出
+    `repo\x1fNone\x1f...`、csv 侧算出 `repo\x1f\x1f...`，两边永远匹配
+    不上。后果是每次同步都把这些行当成"表格里没有"重建、把老行当成"csv
+    里没有"删掉——实测 743 行里有 411 行这样全量删建（103 行 login 为空、
+    308 行 email 为空）。
+    """
+    from_csv = fb._row_key({"repo": "r", "login": "", "email": "a@b.c"})
+    from_table = fb._row_key({"repo": "r", "login": None, "email": "a@b.c"})
+    assert from_csv == from_table
+
+    csv_no_email = fb._row_key({"repo": "r", "login": "u", "email": ""})
+    tbl_no_email = fb._row_key({"repo": "r", "login": "u", "email": None})
+    assert csv_no_email == tbl_no_email
+
+
+def test_sync_does_not_rebuild_rows_with_empty_text_fields(tmp_path):
+    """空 login/email 的行已在表格里时，应走更新而不是删了重建。"""
+    csv_path = _write_csv(tmp_path / "by_repo.csv", [
+        {"repo": "abacus-develop", "login": "", "email": "a1@x.local",
+         "name": "1", "commits": "7"},
+    ])
+    # 表格侧：飞书把空 login 返回成 None
+    existing = [{
+        "record_id": "rec1",
+        "fields": {"repo": "abacus-develop", "login": None,
+                   "email": "a1@x.local", "name": "1"},
+    }]
+    client = FakeClient(existing)
+    result = fb.sync(csv_path, client)
+
+    assert result["updated"] == 1, "应识别为已存在的行"
+    assert result["added"] == 0
+    assert result["deleted"] == 0, "不该把老行删掉重建"
