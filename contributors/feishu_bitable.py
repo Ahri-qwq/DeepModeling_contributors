@@ -30,6 +30,7 @@ import csv
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -252,22 +253,45 @@ def read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def _to_field_value(v: Any) -> Any:
-    """把 csv 字段转成 Bitable 字段值。
+# 表格里 type=2（数字）的那几列。只有这些列才把 csv 的字符串转成数字，
+# 其余列（repo/login/name/email/github_url/is_*/upstream*）都是 type=1
+# 文本列，一律原样传字符串。
+#
+# 为什么必须按列名正向列举，而不是"看着像数字就转"：原先按值推断，遇到
+# abacus-develop 那位 name 就叫「1」的贡献者，把文本列 name 转成了 int，
+# 飞书回 1254060 TextFieldConvFail，整批 batch_create 失败；又因为
+# batch_create 排在 batch_update 之前，异常一抛后面两步都不执行，表格从此
+# 整体停更（2026-09-26 起两天无人发现）。文本列的内容是人名/邮箱/账号，
+# 随时可能出现纯数字，按值猜迟早再踩；数字列则是本项目自己产出的计数，
+# 列名固定可枚举。新增计数列时记得往这里加。
+NUMERIC_FIELDS = frozenset({
+    "commits",
+    "commits_loose",
+    "commits_not_in_upstream",
+    "pr_created",
+    "pr_merged",
+    "pr_reviewed",
+    "issue_created",
+    "issue_commented",
+})
 
-    Bitable 字段按类型赋值：文本直接给字符串、数字给 int/float。csv 读进来
-    全是 str，这里做轻量类型推断——只对明确的数字转，其余保留原文。
-    is_fork / is_bot / is_ai_assistant 这类布尔列建表时按文本处理（type 1），
-    所以 True/False 保持字符串、不转 bool——转成 bool 会给文本列报
-    1254060 TextFieldConvFail。日期、单选项等复杂类型不在此处理。
+
+def _to_field_value(key: str, v: Any) -> Any:
+    """把 csv 字段转成 Bitable 字段值，按列名决定是否转数字。
+
+    数字列（NUMERIC_FIELDS）转 int/float——type=2 的列收到字符串会报错。
+    其余列一律保持字符串：文本列收到数字同样报 1254060 TextFieldConvFail，
+    包括 is_fork / is_bot / is_ai_assistant 这几个建表时按文本处理的布尔列
+    （所以 True/False 也不转 bool）。日期、单选项等复杂类型不在此处理。
     """
     if v is None:
         return ""
     s = str(v).strip()
     if s == "":
         return ""
-    # 纯数字（含负数、科学记数）转数字；带逗号的金额/浮点也转，但保留
-    # 原文特征：只转能安全 round-trip 的，其余交给表格按文本处理。
+    if key not in NUMERIC_FIELDS:
+        return s
+    # 数字列：转不掉就退回原文，让飞书报错也比这里静默抛异常好定位。
     if _is_numeric(s):
         try:
             if "." in s or "e" in s.lower():
@@ -290,7 +314,7 @@ def rows_to_records(rows: list[dict]) -> list[dict]:
     """把 csv 行转成 batch_create 的 records 格式。"""
     records = []
     for r in rows:
-        fields = {k: _to_field_value(v) for k, v in r.items() if v is not None}
+        fields = {k: _to_field_value(k, v) for k, v in r.items() if v is not None}
         records.append({"fields": fields})
     return records
 
@@ -392,7 +416,7 @@ def sync(csv_path: Path, client: BitableClient) -> dict:
     matched_ids = set()
     for row in rows:
         key = _row_key(row)
-        fields = {k: _to_field_value(v) for k, v in row.items() if v is not None}
+        fields = {k: _to_field_value(k, v) for k, v in row.items() if v is not None}
         if key in by_key:
             to_update.append({"record_id": by_key[key], "fields": fields})
             matched_ids.add(by_key[key])
@@ -459,8 +483,13 @@ def main() -> int:
         client = _make_client_from_env()
         result = sync(csv_path, client)
     except BitableError as exc:
+        # 返回非 0 让调用方（daily_report.sh）走 failed 分支。此前这里
+        # return 0，日志里「sync failed」的下一行紧跟着就是「sync ok」，
+        # 退出码 0，cron 看不出异常——2026-09-26 的表格停更就是这样被
+        # 盖了两天。非 0 只改变日志那一行的措辞：调用方用 if/else 包住，
+        # 两个分支后面都是 return 0，不影响 --fetch 自身的成功状态。
         log.warning("bitable sync failed (non-fatal): %s", exc)
-        return 0
+        return 1
     log.info("同步完成: 新增 %s 行, 更新 %s 行, 删除 %s 行, 跳过 %s 行",
              result["added"], result["updated"], result["deleted"],
              result["skipped"])
@@ -477,4 +506,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    main()
+    # 必须 sys.exit(main())：只写 main() 的话返回值被丢弃，进程退出码恒为 0，
+    # 上面那个 return 1 等于没写。
+    sys.exit(main())

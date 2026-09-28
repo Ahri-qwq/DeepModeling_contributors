@@ -171,3 +171,49 @@ def test_row_key_distinguishes_by_email(tmp_path):
     k3 = fb._row_key({"repo": "r", "login": "codecov", "email": ""})
     k4 = fb._row_key({"repo": "r", "login": "dependabot", "email": ""})
     assert k3 != k4
+
+
+def test_text_column_keeps_numeric_looking_string(tmp_path):
+    """文本列里长得像数字的值必须保持字符串。
+
+    线上踩过：abacus-develop 有位贡献者 name 就叫「1」，被当成数字转成
+    int 写进文本列 name，飞书回 1254060 TextFieldConvFail，整批 batch_create
+    失败。而 batch_create 排在 batch_update 前面，异常一抛后面两步都不执行
+    ——表格从此整体停更（2026-09-26 起两天没更新才发现）。
+    """
+    csv_path = _write_csv(tmp_path / "by_repo.csv", [
+        {"repo": "abacus-develop", "login": "", "email": "a1@1demacbook-air.local",
+         "name": "1", "commits": "0"},
+    ])
+    client = FakeClient()
+    fb.sync(csv_path, client)
+
+    fields = client.created[0]["fields"]
+    assert fields["name"] == "1", "name 是文本列，不能转成数字"
+    assert isinstance(fields["name"], str)
+
+
+def test_numeric_column_still_converts_to_number(tmp_path):
+    """计数列是真数字列（type=2），必须转成数字，不能退化成字符串。"""
+    csv_path = _write_csv(tmp_path / "by_repo.csv", [
+        {"repo": "deepmd-kit", "login": "someone", "email": "a@b.c",
+         "name": "Someone", "commits": "42"},
+    ])
+    client = FakeClient()
+    fb.sync(csv_path, client)
+
+    assert client.created[0]["fields"]["commits"] == 42
+
+
+def test_numeric_looking_login_and_email_stay_text(tmp_path):
+    """login / email 同为文本列，纯数字值也要保持字符串。"""
+    csv_path = _write_csv(tmp_path / "by_repo.csv", [
+        {"repo": "r", "login": "123456", "email": "789", "name": "n",
+         "commits": "1"},
+    ])
+    client = FakeClient()
+    fb.sync(csv_path, client)
+
+    fields = client.created[0]["fields"]
+    assert fields["login"] == "123456"
+    assert fields["email"] == "789"
