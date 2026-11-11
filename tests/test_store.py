@@ -7,6 +7,37 @@ from contributors.events import Event
 from contributors.store import EventStore, classify_failure
 
 
+def test_fallback_excluded_list_matches_real_one():
+    """store 的回退名单必须与 repos.py 的真实名单一致。
+
+    回退只在 requests 缺失时才走（看板独立部署的降级场景），平时跑不到。
+    不钉住的话，将来有人只改 repos.py 而忘了改这里，降级路径的口径会
+    静默漂移，而日常测试全绿——这种不一致最难发现。
+
+    直接把 repos 的导入打断来触发真正的回退分支，不靠匹配源码文本：
+    那种写法会被引号风格之类的无关改动搞挂。
+    """
+    import builtins
+
+    from contributors import store as store_mod
+    from contributors.repos import EXCLUDED_REPOS
+
+    real = builtins.__import__
+
+    def boom(name, *a, **kw):
+        if "repos" in name:
+            raise ImportError("模拟 requests 缺失")
+        return real(name, *a, **kw)
+
+    builtins.__import__ = boom
+    try:
+        fallback = store_mod._excluded_repos()
+    finally:
+        builtins.__import__ = real
+
+    assert fallback == tuple(sorted(EXCLUDED_REPOS))
+
+
 @pytest.fixture
 def store():
     s = EventStore(":memory:")
@@ -173,6 +204,48 @@ class TestPendingSince:
 
     def test_no_successful_run_yet_means_first_run(self, store):
         assert store.is_first_run() is True
+
+    def test_excluded_repos_filtered_from_pending(self, store):
+        """pending_since_last_notify 同样过滤排除名单。"""
+        run = store.begin_run()
+        store.upsert_events([
+            _pr(repo="deepmd-kit", number=1),
+            _pr(repo=".github", number=2),
+            _pr(repo="lammps", number=3),
+        ], run)
+        store.finish_run(run, repos_processed=3)
+
+        pending = store.pending_since_last_notify()
+        assert [e.repo for e in pending.new_events] == ["deepmd-kit"]
+
+    def test_excluded_repos_filtered_from_state_changes(self, store):
+        """状态变更走 JOIN events，用的是 e.repo 别名，单独锁一道。
+
+        不滤的话会出现"事件被滤掉、状态变更却照推"的割裂：卡片上冒出
+        一条被排除仓库的 PR 合并消息，而它的新建消息从来没出现过。
+        """
+        r1 = store.begin_run(since="2026-01-01", until="2026-08-09")
+        store.upsert_events([
+            _pr(repo="deepmd-kit", number=7, state="open"),
+            _pr(repo=".github", number=8, state="open"),
+        ], r1)
+        store.finish_run(r1, repos_processed=2)
+        store.mark_notified(r1, True)
+
+        r2 = store.begin_run(since="2026-01-01", until="2026-08-10")
+        store.upsert_events([
+            _pr(repo="deepmd-kit", number=7, state="merged"),
+            _pr(repo=".github", number=8, state="merged"),
+        ], r2)
+        store.finish_run(r2, repos_processed=2)
+
+        pending = store.pending_since_last_notify()
+        assert [c.repo for c in pending.state_changes] == ["deepmd-kit"]
+
+        # 窗口口径那条 JOIN 查询走的是另一段 SQL，一并锁住
+        res = store.pending_in_window("2000-01-01T00:00:00+00:00",
+                                      "2099-01-01T00:00:00+00:00")
+        assert [c.repo for c in res.state_changes] == ["deepmd-kit"]
 
     def test_after_a_finished_run_it_is_no_longer_first(self, store):
         r1 = store.begin_run(since="2026-01-01", until="2026-08-09")
@@ -378,6 +451,38 @@ class TestPeriodQuery:
     def test_empty_range_returns_empty(self, store):
         assert store.events_between("2026-01-01T00:00:00Z",
                                     "2026-01-02T00:00:00Z") == []
+
+    def test_excluded_repos_are_filtered_out(self, store):
+        """排除名单对历史数据同样生效。
+
+        抓取层的 should_skip 只挡住"不再产生新事件"，库里已有的历史
+        事件仍会被按时间切区间的周月报扫到。不在查询层补一道，周月报
+        就会比日报和看板多出一截——两边数字对不上最难解释。
+        """
+        run = store.begin_run()
+        store.upsert_events([
+            self._ev("c1", "2026-08-05T10:00:00Z", repo="deepmd-kit"),
+            self._ev("c2", "2026-08-05T11:00:00Z", repo=".github"),
+            self._ev("c3", "2026-08-05T12:00:00Z", repo="lammps"),
+        ], run)
+        store.finish_run(run, repos_processed=3)
+
+        got = store.events_between("2026-08-04T00:00:00Z",
+                                   "2026-08-11T00:00:00Z")
+        assert [e.repo for e in got] == ["deepmd-kit"]
+
+    def test_excluded_repos_filtered_in_daily_window(self, store):
+        """日报走的 pending_in_window 同样过滤，与周月报保持一致口径。"""
+        run = store.begin_run()
+        store.upsert_events([
+            self._ev("d1", "2026-08-05T10:00:00Z", repo="deepmd-kit"),
+            self._ev("d2", "2026-08-05T11:00:00Z", repo=".github"),
+        ], run)
+        store.finish_run(run, repos_processed=2)
+
+        res = store.pending_in_window("2000-01-01T00:00:00+00:00",
+                                      "2099-01-01T00:00:00+00:00")
+        assert [e.repo for e in res.new_events] == ["deepmd-kit"]
 
 
 # ---- 抓取失败追踪 ----

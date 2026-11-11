@@ -24,8 +24,10 @@ try:
     from contributors.repos import EXCLUDED_REPOS
 except Exception:  # noqa: BLE001
     # contributors 包依赖 requests，看板本身只用标准库。真缺了也不该起不来，
-    # 退回硬编码同一份内容（与 repos.py:EXCLUDED_REPOS 保持一致）
-    EXCLUDED_REPOS = {".github"}
+    # 退回硬编码同一份内容（与 repos.py:EXCLUDED_REPOS 保持一致）。
+    # 保持 dict 而非 set：两条路径类型一致，将来若有人按 key 取排除理由，
+    # 回退路径不会变成 TypeError。看板只用 in 判断，value 留空即可。
+    EXCLUDED_REPOS = {".github": "", "lammps": ""}
 
 
 @dataclass
@@ -210,6 +212,10 @@ def read_yearly_csv(path: str) -> list:
     这份 CSV 每次运行整表重写，固定"过去一年"窗口，没有时间参数可筛选
     （规划文档「取数决策」）。repo 字段为空表示这是跨仓库汇总行
     （output.py:summarize 的产出），看板只需要这些汇总行。
+
+    这里不过滤 EXCLUDED_REPOS，不是遗漏：summary.csv 只含汇总行，没有
+    按仓库的粒度可供过滤，而汇总数字是从 kept 仓库累加来的，抓取层已经
+    把被排除的仓库挡掉了。若哪天给这份 CSV 加上分仓库行，这里要补过滤。
     """
     p = Path(path)
     if not p.exists():

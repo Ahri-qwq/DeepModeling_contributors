@@ -69,8 +69,10 @@ def test_non_fork_has_no_family():
 # --- pushed_at 预筛 ---
 
 def test_repo_pushed_before_since_is_skipped():
-    # lammps 停在 2024-04-11，一年窗口内不可能有 commit
-    r = mk_repo(name="lammps", pushed="2024-04-11T00:00:00Z")
+    # plumed2 停在 2024-04-11，一年窗口内不可能有 commit。
+    # 这里刻意不用 lammps：它已进 EXCLUDED_REPOS，会被更靠前的闸门拦下，
+    # 测不到 pushed_at 这条规则。
+    r = mk_repo(name="plumed2", pushed="2024-04-11T00:00:00Z")
     assert should_skip(r, mk_cfg()) == "pushed_at 早于统计起点"
 
 
@@ -145,7 +147,7 @@ def test_repos_whitelist_keeps_listed():
     assert should_skip(r, mk_cfg(repos=["dpdata"])) is None
 
 
-# --- 组织元仓库排除 ---
+# --- 硬排除名单 ---
 
 def test_excluded_repo_is_skipped():
     """.github 是 GitHub 组织元仓库，无真人贡献，始终排除。"""
@@ -159,17 +161,38 @@ def test_excluded_repo_skipped_even_when_in_whitelist():
     assert should_skip(r, mk_cfg(repos=[".github"])) == "组织元仓库，已按 EXCLUDED_REPOS 排除"
 
 
+def test_excluded_reason_is_per_repo():
+    """排除理由按仓库分流，不共用一句话——lammps 不是组织元仓库。"""
+    r = mk_repo(name="lammps")
+    assert should_skip(r, mk_cfg()) == (
+        "external fork 且无社区贡献，已按 EXCLUDED_REPOS 排除"
+    )
+
+
+def test_lammps_excluded_even_when_pushed_at_is_recent():
+    """2026-10-15 上游同步让 pushed_at 跳进窗口，仍应排除。
+
+    这正是加它进名单的场景：pushed_at 闸门在 EXCLUDED_REPOS 之后，
+    靠前者挡不住上游同步带来的「复活」。
+    """
+    r = mk_repo(name="lammps", pushed="2026-10-15T09:10:59Z", is_fork=True,
+                upstream="lammps/lammps")
+    assert should_skip(r, mk_cfg(repos=["lammps"])) == (
+        "external fork 且无社区贡献，已按 EXCLUDED_REPOS 排除"
+    )
+
+
 # --- filter_repos 汇总 ---
 
 def test_filter_repos_returns_kept_and_reasons():
     repos = [
         mk_repo(name="dpdata", pushed="2026-07-01T00:00:00Z"),
-        mk_repo(name="lammps", pushed="2024-04-11T00:00:00Z"),
+        mk_repo(name="plumed2", pushed="2024-04-11T00:00:00Z"),
         mk_repo(name="sciencepedia", size_mb=17563.2),
     ]
     kept, skipped = filter_repos(repos, mk_cfg(max_repo_size=2048))
     assert [r.name for r in kept] == ["dpdata"]
-    assert set(skipped) == {"lammps", "sciencepedia"}
+    assert set(skipped) == {"plumed2", "sciencepedia"}
     assert all(isinstance(v, str) and v for v in skipped.values())
 
 

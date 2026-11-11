@@ -253,7 +253,29 @@ email→login 映射的来源（按优先级）：
 
 **fork 三分类**：上游属同一生态（白名单组织）→ `self`（纳入）；真正的外部项目 → `external`；CI 流程工具 → `tooling`（排除）。输出中用 `upstream_family` 列标注，可在输出层面事后筛选而不需重爬。fork 仓库额外提供 `commits_not_in_upstream` 列，排除上游已有提交后的数量。
 
-**组织元仓库排除**：`.github` 是 GitHub 的组织级特殊仓库，存 profile README、issue 模板与 `github-metrics` 定时任务自动生成的统计图表。它没有真人贡献（实测一年 5583 条提交全部是 bot、`author_login` 为空），却因那个定时任务 `pushed_at` 长期最新而稳居活跃仓库榜首，让外部读者困惑。名单写在 `contributors/repos.py` 的 `EXCLUDED_REPOS`，优先级高于 `--repos` 白名单——显式指定也不会纳入。
+**硬排除名单**：按仓库名写死、优先级高于 `--repos` 白名单——显式指定也不会纳入。名单与各自的理由写在 `contributors/repos.py` 的 `EXCLUDED_REPOS`（`{仓库名: 理由}`，理由会原样写进日志与 `run_meta.json` 的 `skipped`）。看板 `dashboard/queries.py` 复用同一份名单，导入失败时回退到一份硬编码副本，改名单要同时改那里。
+
+排除是**双层**的，两层都必要：
+
+1. **抓取层**（`repos.py:should_skip`）：被排除的仓库不进 `kept`，从此不再产生新事件。
+2. **查询层**（`store.py:EXCLUDE_SQL`，三处事件查询与配套的状态变更查询都加）：挡住排除生效**之前**已入库的历史事件。
+
+只有第一层时，排除一个已攒下近期数据的仓库，它的历史事件仍会被按时间切区间的周报月报扫到，而日报与看板已经不显示——两边数字对不上最难解释。实测 `.github` 在 2026-08-31 被排除，库里留下 5583 条历史事件；加上查询层过滤后，回溯 2026-08 的区间从 1765 条降到 1409 条（正好滤掉那个月的 356 条），而当前周月报区间数字不变（它们本就扫不到那批历史数据）。
+
+日报里也有一条路径会受查询层过滤影响：昨日无更新时卡片会贴一行"本周至今 N 次提交"作为回退（`period.pick_recent` 走 `events_between`），这个数字同样按 `event_time` 切区间，过滤后与周月报、看板同口径。日报的当日增量与底部年度累计不受影响——前者切 `first_seen_at`、被排除仓库不再产生新事件，后者走 `by_repo.csv` 根本不经过 store。
+
+- **`.github`**：GitHub 的组织级特殊仓库，存 profile README、issue 模板与 `github-metrics` 定时任务自动生成的统计图表。它没有真人贡献（实测一年 5583 条提交全部是 bot、`author_login` 为空），却因那个定时任务 `pushed_at` 长期最新而稳居活跃仓库榜首，让外部读者困惑。
+- **`lammps`**：见下节。
+
+### lammps 排除
+
+`deepmodeling/lammps` 是 fork 自 `lammps/lammps` 的 external fork。它原本因 `pushed_at` 停在 2024-04-11 而被"早于统计起点"这道闸门挡在窗口外；2026-10-15 的一次上游代码同步把 `pushed_at` 刷进一年窗口，于是它进入待处理清单（待处理数从 37 变 38），并开始尝试全量克隆。
+
+**排除它的理由与克隆失败无关**，而是口径问题：克隆下来实测，近一年 6461 条提交的作者是 Axel Kohlmeyer（3940）、Stan Moore（619）、jtclemm 等上游 LAMMPS 维护者，**零个社区贡献者**；而社区一年总提交才 6005 次——抓进来会让统计数据翻倍，且多出来的全是组织外的人。社区侧真正的 LAMMPS 相关开发在 `deepmd-kit` 里做（2026 年 149 个相关 PR），那个仓库已在统计内，不会漏。
+
+**复查条件**：该 fork 历史上确有社区活动——njzjz、Yi-FanLi 在 2021 年提过 `dp_pimd`、deepmd plugin 相关 PR。但 4 个 PR 全部 closed 且**无一 merged**，最后一次活动是 2024-04-11 的 bot PR。若今后该 fork 出现**已合并的社区 PR**，说明开发重心搬了回来，应把它从 `EXCLUDED_REPOS` 移除重新纳入。
+
+届时需一并解决克隆通道问题：实测该服务器上 HTTPS 到 `github.com:443` 会 TCP 连上但收不到首字节（`api.github.com` 正常、小仓库 `dpti` 同样失败，与仓库体积无关），而 SSH 走 22 端口畅通——`git@github.com` 的 `ls-remote` 4.4 秒返回，全量 blobless mirror clone 19 分 15 秒完成。改走 SSH 即可。
 
 ## 输出
 
@@ -494,7 +516,7 @@ py -3.12 -m contributors --monthly    # 上月一号 ~ 月末
 
 | 命令 | 作用 | 耗时 |
 |---|---|---|
-| `daily_report.bat --fetch` | 抓取并入库，不推送 | 约 25 分钟（38 个仓库） |
+| `daily_report.bat --fetch` | 抓取并入库，不推送 | 约 25 分钟（37 个仓库） |
 | `daily_report.bat --push` | 只算增量并推送 | 数秒 |
 | `daily_report.bat --daily` | 抓取成功才推送 | 约 25 分钟 |
 | `daily_report.bat --weekly` | 推上周汇总 | 数秒 |

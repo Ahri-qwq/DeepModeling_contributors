@@ -26,11 +26,29 @@ SELF_ORGS = {
     "mzjb",
 }
 
-# 组织元仓库：GitHub 特殊用途、无真人贡献，不纳入统计
-# .github 存 profile README / issue 模板 / github-metrics bot 自动提交，
-# 排名靠前只会让外部读者困惑。
+# 按仓库名硬排除的名单。值是写进日志的理由，各仓库原因不同，不能共用一句话。
+# 优先级高于 --repos 白名单：显式指定也不会纳入。
+#
+# .github：组织元仓库，存 profile README / issue 模板 / github-metrics bot
+# 自动提交。无真人贡献（实测一年 5583 条提交全是 bot、author_login 为空），
+# 却因定时任务 pushed_at 长期最新而稳居活跃榜首，让外部读者困惑。
+#
+# lammps：fork 自 lammps/lammps 的 external fork。2026-10-15 上游同步使
+# pushed_at 跳进一年窗口，于是被纳入统计并开始尝试全量克隆，此后连续失败
+# 54 次（见下方「复查条件」）。它不该被统计的理由与克隆失败无关——
+# 近一年 6461 条提交的作者是 Axel Kohlmeyer(3940)、Stan Moore(619)、
+# jtclemm 等上游 LAMMPS 维护者，零个社区贡献者；而社区一年总提交才 6005 次，
+# 抓进来会让数据翻倍且全是外部人。社区侧真正的 LAMMPS 开发在 deepmd-kit
+# 里做（2026 年 149 个相关 PR），那个仓库已在统计内，不会漏。
+#
+# lammps 的复查条件：该 fork 历史上确有社区活动（njzjz、Yi-FanLi 在
+# 2021 年提过 dp_pimd、deepmd plugin 相关 PR），但 4 个 PR 全部 closed
+# 且无一 merged，最后一次活动是 2024-04-11 的 bot PR。若今后该 fork 出现
+# **已合并的社区 PR**，说明开发重心搬了回来，应把它从本名单移除重新纳入
+# （届时需一并解决 HTTPS 克隆不通的问题，见 README「lammps 排除」一节）。
 EXCLUDED_REPOS = {
-    ".github",
+    ".github": "组织元仓库，已按 EXCLUDED_REPOS 排除",
+    "lammps": "external fork 且无社区贡献，已按 EXCLUDED_REPOS 排除",
 }
 
 # CI/流程工具类上游，按 full_name 精确匹配
@@ -70,7 +88,7 @@ def should_skip(repo: RepoInfo, cfg) -> Optional[str]:
         return "不在 --repos 指定范围内"
 
     if repo.name in EXCLUDED_REPOS:
-        return "组织元仓库，已按 EXCLUDED_REPOS 排除"
+        return EXCLUDED_REPOS[repo.name]
 
     if repo.is_fork:
         if cfg.include_forks == "none":

@@ -19,6 +19,33 @@ from .events import Event, StateChange
 
 log = logging.getLogger(__name__)
 
+
+def _excluded_repos() -> tuple:
+    """硬排除名单的仓库名，按名字排序后返回元组。
+
+    惰性导入 repos：那个模块依赖 requests，而本模块此前只用标准库。
+    真缺了也不该让查询崩掉——退回硬编码同一份内容，与
+    repos.py:EXCLUDED_REPOS 和 dashboard/queries.py 的回退保持一致。
+    """
+    try:
+        from .repos import EXCLUDED_REPOS
+        return tuple(sorted(EXCLUDED_REPOS))
+    except Exception:  # noqa: BLE001
+        return (".github", "lammps")
+
+
+# 事件查询统一加这道过滤。排除本该在抓取层生效（should_skip 把仓库挡在
+# kept 之外，被排除的仓库不再产生新事件），但那是单层防御：排除一个
+# 已经攒了近期数据的仓库时，它的历史事件仍会留在库里，继续出现在按时间
+# 切区间的周报月报中，而日报与看板已经不显示——两边数字对不上最难解释。
+# 这里在查询层补第二道，让"排除"对历史数据同样成立。
+_EXCLUDED = _excluded_repos()
+_EXCL_PLACEHOLDERS = ",".join("?" * len(_EXCLUDED))
+# 用于直接查 events 表
+EXCLUDE_SQL = f" AND repo NOT IN ({_EXCL_PLACEHOLDERS})"
+# 用于 event_state_changes JOIN events 的场景，需要显式限定表别名
+EXCLUDE_SQL_E = f" AND e.repo NOT IN ({_EXCL_PLACEHOLDERS})"
+
 # 失败原因分类用的关键词。判定顺序是"先永久后网络"：一次请求可能
 # 既超时又返回 404，此时该按永久处理 —— 永久错误重试再多也没用。
 #
@@ -580,15 +607,17 @@ class EventStore:
         last = self._last_notified_run()
 
         rows = self.conn.execute(
-            "SELECT * FROM events WHERE first_seen_run > ? ORDER BY event_time",
-            (last,)).fetchall()
+            "SELECT * FROM events WHERE first_seen_run > ?" + EXCLUDE_SQL
+            + " ORDER BY event_time",
+            (last, *_EXCLUDED)).fetchall()
         new_events = [self._row_to_event(r) for r in rows]
 
         rows = self.conn.execute(
             "SELECT c.event_key, c.old_state, c.new_state, "
             "       e.kind, e.repo, e.number, e.title, e.url, e.author_login "
             "FROM event_state_changes c JOIN events e USING (event_key) "
-            "WHERE c.run_id > ? ORDER BY c.id", (last,)).fetchall()
+            "WHERE c.run_id > ?" + EXCLUDE_SQL_E + " ORDER BY c.id",
+            (last, *_EXCLUDED)).fetchall()
         changes = [StateChange(
             event_key=r["event_key"], kind=r["kind"], repo=r["repo"],
             number=r["number"], title=r["title"], url=r["url"],
@@ -622,8 +651,9 @@ class EventStore:
 
         rows = self.conn.execute(
             "SELECT * FROM events WHERE first_seen_at >= ? AND first_seen_at < ? "
-            "AND (? = '' OR first_seen_at > ?) ORDER BY event_time",
-            (start, end, floor, floor)).fetchall()
+            "AND (? = '' OR first_seen_at > ?)" + EXCLUDE_SQL
+            + " ORDER BY event_time",
+            (start, end, floor, floor, *_EXCLUDED)).fetchall()
         new_events = [self._row_to_event(r) for r in rows]
 
         rows = self.conn.execute(
@@ -631,8 +661,9 @@ class EventStore:
             "       e.kind, e.repo, e.number, e.title, e.url, e.author_login "
             "FROM event_state_changes c JOIN events e USING (event_key) "
             "WHERE c.changed_at >= ? AND c.changed_at < ? "
-            "AND (? = '' OR c.changed_at > ?) ORDER BY c.id",
-            (start, end, floor, floor)).fetchall()
+            "AND (? = '' OR c.changed_at > ?)" + EXCLUDE_SQL_E
+            + " ORDER BY c.id",
+            (start, end, floor, floor, *_EXCLUDED)).fetchall()
         changes = [StateChange(
             event_key=r["event_key"], kind=r["kind"], repo=r["repo"],
             number=r["number"], title=r["title"], url=r["url"],
@@ -671,10 +702,14 @@ class EventStore:
 
         参数是 UTC ISO 字符串。周月边界按东八区算好再转 UTC 传进来 ——
         库里一律存 UTC，时区换算是调用方的事。
+
+        同样过滤 EXCLUDED_REPOS：这里最需要它。按时间切区间会扫到排除
+        生效之前入库的历史事件，不滤就会让周月报比日报和看板多出一截。
         """
         rows = self.conn.execute(
-            "SELECT * FROM events WHERE event_time >= ? AND event_time < ? "
-            "ORDER BY event_time", (start, end)).fetchall()
+            "SELECT * FROM events WHERE event_time >= ? AND event_time < ?"
+            + EXCLUDE_SQL + " ORDER BY event_time",
+            (start, end, *_EXCLUDED)).fetchall()
         return [self._row_to_event(r) for r in rows]
 
     @staticmethod
