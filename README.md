@@ -478,6 +478,23 @@ commit 44%、issue 9%；而且 commit 是过程不是意图（一个 PR 里混�
 abacus-develop（60% 规范度，却是最活跃仓库）等几个仓库，待后续用 LLM 补齐，
 进展与规划见 `docs/运维/卡片语义化运维日志.md`。
 
+### 社区动向日报
+
+在项目 `.env` 中设置 `COMMUNITY_SUMMARY_ENABLED=1` 和 `COMMUNITY_DEEPSEEK_API_KEY` 即可启用。
+`COMMUNITY_DEEPSEEK_MODEL` 可选，默认使用 `deepseek-flash`。
+
+日报使用公开 GitHub 事件和必要的 PR、Issue 正文，生成至多三条社区动向。公开资源变更也进入候选，
+Papers 批次按项目和年份串联，并核对改动前后的条目数量。人物角色和链接来自证据，模型调用失败时发原版卡片。
+成功生成的摘要按时间窗和证据缓存。已推送的主题作为后续日报的前情。
+
+使用数据库副本预览历史卡片，`--date` 传窗口结束日：
+
+```bash
+python -m contributors --daily --only-notify --notify-dry-run --date 2026-11-11 --events-db /path/to/copy.db
+```
+
+停用时将 `COMMUNITY_SUMMARY_ENABLED` 设为 `0`，定时任务下次运行即使用原版卡片。
+
 ### 行为要点
 
 首次运行会把窗口内几千条事件全判为新增，此时只建库不推送，从第二次运行起才有意义。

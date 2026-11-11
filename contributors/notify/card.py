@@ -293,35 +293,64 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
     return "\n".join(lines)
 
 
-def _title(d: Digest) -> str:
+def _title(d: Digest, report_date: str = "") -> str:
     """卡片标题。有仓库没抓到时在标题里点一句。
 
     正文已经有"未能抓取"那行，标题再说一次是因为：群里很多人只扫标题，
     正文折叠着不点开。标题只说"部分仓库数据缺失"这个事实，不列名字 ——
     缺哪几个、会怎么补，正文讲得清楚，标题挤不下也不该挤。
     """
-    base = f"DeepModeling 社区日报 {d.generated_at}"
+    base = f"DeepModeling 社区日报 {report_date or d.generated_at}"
     if d.failed_repos or d.chronic_failures:
         n = len(d.failed_repos) + len(d.chronic_failures)
         return f"{base}（{n} 个仓库今日数据缺失）"
     return base
 
 
-def _build(d: Digest, limit: int) -> dict:
+def _payload(title: str, text: str) -> dict:
     return {
         "msg_type": "interactive",
         "card": {
             "header": {
                 "title": {"tag": "plain_text",
-                          "content": _title(d)},
+                          "content": title},
                 "template": "blue",
             },
             "elements": [
                 {"tag": "div",
-                 "text": {"tag": "lark_md", "content": render_text(d, limit)}},
+                 "text": {"tag": "lark_md", "content": text}},
             ],
         },
     }
+
+
+def render_community(d: Digest, stories: list, report_date: str) -> dict | None:
+    """Render validated facts as a compact digest, with existing coverage alerts."""
+    def story_text(value):
+        return _escape(value).replace("<", "＜").replace(">", "＞").replace("*", "\\*")
+
+    lines = []
+    for story in stories:
+        if lines:
+            lines.append("")
+        lines.append(f"**{story_text(story['repo'])}｜{story_text(story['title'])}**")
+        lines.append(story_text(story["text"]))
+        context = [story["stage"]]
+        context.extend(f"[@{person['login']}](https://github.com/{person['login']}) {person['role']}" for person in story["people"])
+        context.extend(f"[{_escape(source['label'])}]({source['url']})" for source in story["sources"])
+        lines.append(" · ".join(context))
+    if not lines:
+        lines.append("本期活动概览")
+    lines.extend(["", _summary_line(d)])
+    links = []
+    for key, label in (("DASHBOARD_URL", "活动趋势与明细"), ("FEISHU_BITABLE_VIEW_URL", "贡献者明细")):
+        if url := os.environ.get(key):
+            links.append(f"[{label}]({url})")
+    if links:
+        lines.append(" · ".join(links))
+    lines.extend(line for line in (_failed_line(d), _chronic_line(d)) if line)
+    payload = _payload(_title(d, report_date), "\n".join(lines))
+    return payload if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT else None
 
 
 def render(d: Digest) -> dict:
@@ -332,7 +361,7 @@ def render(d: Digest) -> dict:
     单条标题极长），至少消息本身还发得出去。
     """
     for limit in (MAX_ITEMS, 3, 1):
-        card = _build(d, limit)
+        card = _payload(_title(d), render_text(d, limit))
         if len(json.dumps(card, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT:
             return card
     return card

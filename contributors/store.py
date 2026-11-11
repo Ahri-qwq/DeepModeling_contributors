@@ -163,6 +163,14 @@ CREATE TABLE IF NOT EXISTS digests (
 
 CREATE INDEX IF NOT EXISTS idx_digests_run ON digests(run_id);
 
+CREATE TABLE IF NOT EXISTS community_summaries (
+    window_start TEXT NOT NULL,
+    cache_key    TEXT NOT NULL,
+    stories      TEXT NOT NULL,
+    digest_id    INTEGER REFERENCES digests(id),
+    PRIMARY KEY (window_start, cache_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_changes_run ON event_state_changes(run_id);
 
 -- 哪个仓库在哪次运行抓取失败。存在的理由：没有这张表，"连续挂 30 天"
@@ -501,6 +509,46 @@ class EventStore:
         self.conn.execute("UPDATE digests SET sent=? WHERE id=?",
                           (1 if ok else 0, digest_id))
         self.conn.commit()
+
+    def get_community_summary(self, window_start: str, cache_key: str) -> Optional[list]:
+        row = self.conn.execute(
+            "SELECT stories FROM community_summaries WHERE window_start=? AND cache_key=?",
+            (window_start, cache_key),
+        ).fetchone()
+        return json.loads(row["stories"]) if row else None
+
+    def save_community_summary(self, window_start: str, cache_key: str, stories: list) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO community_summaries (window_start, cache_key, stories) VALUES (?,?,?)",
+            (window_start, cache_key, json.dumps(stories, ensure_ascii=False)),
+        )
+        self.conn.commit()
+
+    def link_community_summary(self, window_start: str, cache_key: str, digest_id: int) -> None:
+        self.conn.execute(
+            "UPDATE community_summaries SET digest_id=? WHERE window_start=? AND cache_key=? "
+            "AND NOT EXISTS (SELECT 1 FROM digests WHERE id=community_summaries.digest_id AND sent=1)",
+            (digest_id, window_start, cache_key),
+        )
+        self.conn.commit()
+
+    def recent_community_topics(self, start: str, end: str) -> list:
+        rows = self.conn.execute(
+            "SELECT c.window_start, c.stories FROM community_summaries c JOIN digests d ON d.id=c.digest_id "
+            "WHERE c.window_start>=? AND c.window_start<? AND d.sent=1 ORDER BY c.window_start DESC, d.id DESC",
+            (start, end),
+        )
+        seen = set()
+        topics = []
+        for row in rows:
+            for story in json.loads(row["stories"]):
+                topic = story["topic"]
+                if topic in seen:
+                    continue
+                seen.add(topic)
+                topics.append({"topic": topic, "title": story["title"], "stage": story["stage"],
+                               "counts": story.get("resource_counts"), "reported_for": row["window_start"]})
+        return topics
 
     def latest_digest(self) -> Optional[dict]:
         """最近一份战报的卡片 JSON。库里没有时返回 None。"""

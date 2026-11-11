@@ -5,6 +5,7 @@
 """
 import csv
 import json
+import sqlite3
 import sys
 import time
 from dataclasses import replace
@@ -23,7 +24,7 @@ from .git_stats import (
 )
 from .identity import IdentityResolver, is_ai_assistant, is_bot, is_marked_bot
 from .models import ApiStats
-from .notify import card, digest, feishu, period
+from .notify import card, community, digest, feishu, period
 from .output import (
     SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
     write_markdown,
@@ -751,7 +752,12 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         # 之前 load_env 在 card.render 之后，导致渲染按钮时 DASHBOARD_URL
         # 还没读进环境变量，服务器干净环境下按钮永不渲染。
         feishu.load_env()
-        payload = card.render(d)
+        summary, summary_key = community.daily_summary(store, pending, cfg.org, win_start, win_end)
+        optimized = None
+        if summary is not None:
+            report_date = datetime.fromisoformat(win_start).astimezone(period.CST).date().isoformat()
+            optimized = card.render_community(d, summary, report_date)
+        payload = optimized or card.render(d)
         if cfg.notify_dry_run:
             # dry-run 也存档：这样调通道时不必等真实增量，可以直接重发
             store.save_digest(run_id, payload, sent=None)
@@ -759,6 +765,11 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             return
 
         digest_id = store.save_digest(run_id, payload, sent=None)
+        if optimized and summary_key:
+            try:
+                store.link_community_summary(win_start, summary_key, digest_id)
+            except sqlite3.Error:
+                print("注意：社区动向存档关联失败，继续推送日报")
         try:
             feishu.send(payload)
             store.mark_notified(run_id, True)
