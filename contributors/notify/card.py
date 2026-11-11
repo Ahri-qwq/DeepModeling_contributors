@@ -5,6 +5,9 @@
 """
 import json
 import os
+import re
+import unicodedata
+from html import unescape
 
 from .classify import group_by_category
 from .digest import MAX_ITEMS, Digest
@@ -12,6 +15,22 @@ from .digest import MAX_ITEMS, Digest
 # 飞书请求体上限 20 KB（官方文档）。留 2 KB 余量给签名等顶层字段，
 # 超过就逐级降级 —— 宁可少列几条，也不能整条消息发不出去。
 SIZE_LIMIT = 18 * 1024
+LINK_IN_PROSE = re.compile(
+    r"\]\s*\(|<(?:a|at)\b|(?<![a-z0-9_])(?:[a-z][a-z0-9+.-]*\s*://|https?\s*:|mailto\s*:|javascript\s*:|www\s*\.)"
+    r"|(?<![a-z0-9_.-])(?:[\w-]+\.)+[^\W\d_][\w-]{1,62}(?![\w-])"
+    r"|(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",
+    re.I,
+)
+
+
+def is_plain_story_text(value: str) -> bool:
+    """Accept prose while keeping links in separately validated source fields."""
+    if not isinstance(value, str):
+        return False
+    normalized = unicodedata.normalize("NFKC", unescape(value)).replace("\\", "")
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Cf")
+    normalized = re.sub(r"(?<=[A-Za-z0-9])(?:。|｡)(?=[A-Za-z0-9])", ".", normalized)
+    return LINK_IN_PROSE.search(normalized) is None
 
 
 def _line(item, kind: str) -> str:
@@ -28,6 +47,8 @@ def _line(item, kind: str) -> str:
     提交者拿到什么放什么，拿不到就省略——已删号用户 author 为 null。
     """
     title = _escape(item.title) or "(无标题)"
+    if item.title and not is_plain_story_text(item.title):
+        title = "查看原始标题"
     who = f" @{_escape(item.author)}" if getattr(item, "author", "") else ""
     # 按意图分区后，合并/新建只能靠条目自己说 —— 以前这个信息
     # 由分区名（「合并的 PR」「新建的 PR」）承载。只标 PR：commit
@@ -50,8 +71,8 @@ def _escape(text: str) -> str:
     """
     if not text:
         return ""
-    return (text.replace("[", "\\[").replace("]", "\\]")
-                .replace("`", "\\`"))
+    return (text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+                .replace("`", "\\`").replace("<", "＜").replace(">", "＞"))
 
 
 def _section(title: str, items: list, limit: int) -> list:
@@ -326,11 +347,16 @@ def _payload(title: str, text: str) -> dict:
 
 def render_community(d: Digest, stories: list, report_date: str) -> dict | None:
     """Render validated facts as a compact digest, with existing coverage alerts."""
+    if not stories:
+        return None
+
     def story_text(value):
-        return _escape(value).replace("<", "＜").replace(">", "＞").replace("*", "\\*")
+        return _escape(value).replace("*", "\\*")
 
     lines = []
     for story in stories:
+        if not is_plain_story_text(story["title"]) or not is_plain_story_text(story["text"]):
+            return None
         if lines:
             lines.append("")
         lines.append(f"**{story_text(story['repo'])}｜{story_text(story['title'])}**")
@@ -339,8 +365,6 @@ def render_community(d: Digest, stories: list, report_date: str) -> dict | None:
         context.extend(f"[@{person['login']}](https://github.com/{person['login']}) {person['role']}" for person in story["people"])
         context.extend(f"[{_escape(source['label'])}]({source['url']})" for source in story["sources"])
         lines.append(" · ".join(context))
-    if not lines:
-        lines.append("本期活动概览")
     lines.extend(["", _summary_line(d)])
     links = []
     for key, label in (("DASHBOARD_URL", "活动趋势与明细"), ("FEISHU_BITABLE_VIEW_URL", "贡献者明细")):

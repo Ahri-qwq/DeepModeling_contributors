@@ -14,10 +14,11 @@ import requests
 
 from ..auth import AuthError, get_token
 from ..identity import is_ai_assistant, is_bot
+from .card import is_plain_story_text
 
 
 LOG = logging.getLogger(__name__)
-VERSION = 1
+VERSION = 2
 MAX_STORIES = 3
 MAX_CURRENT = 100
 MAX_HISTORY = 60
@@ -220,6 +221,8 @@ def _items(output, records):
         text = _compact(item["text"], 240)
         if not title or not text:
             raise ValueError("Story has no text")
+        if not is_plain_story_text(title) or not is_plain_story_text(text):
+            raise ValueError("Story contains a link")
         if re.search(r"已正式发布|已上[线架]|官网已(?:可见|上线)", title + text):
             raise ValueError("Published claim without release evidence")
         if record["stage"] == "有修改提案":
@@ -308,13 +311,13 @@ def daily_summary(store, pending, org, win_start, win_end):
         fingerprint = json.dumps([VERSION, model, current], sort_keys=True, ensure_ascii=False)
         cache_key = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
         cached = store.get_community_summary(win_start, cache_key)
-        if cached is not None:
+        if cached:
             return cached, cache_key
         history_start = (start - timedelta(days=14)).isoformat()
         recent = _event_records(store.pending_in_window(history_start, win_start), False)
         prior = store.recent_community_topics(history_start, win_start)
         stories = _generate(current, recent, prior, org, start, end, api_key, model)
-        if stories is None:
+        if not stories:
             return NO_RESULTS
         store.save_community_summary(win_start, cache_key, stories)
         return stories, cache_key
