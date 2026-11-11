@@ -17,13 +17,30 @@ from .models import RepoInfo
 
 log = logging.getLogger(__name__)
 
-# 上游账号属于 DeepModeling 生态
+# 上游账号属于 DeepModeling 生态。判定按 owner 小写匹配（classify_upstream）。
+#
+# 前四个是组织自己的账号。brucefan1983 是个人账号，收录理由不同：
+# GPUMD（fork 自 brucefan1983/GPUMD）与社区有正式合作——社区为它办付费
+# 课程、走立项审批，2026-11 的周会记录显示已完成两个季度的课程结算，
+# 与武汉大学协同项目、育人项目并列为同类事务。
+#
+# 这条是对第一期判断的修正。2026-07-30 曾确认"只有 GPUMD 算外部项目"
+# （见 docs/第一期工程/2026-07-29-fork清单待确认.md），依据是
+# commits_not_in_upstream=0——fork 里没有社区独立开发的代码。那个技术
+# 指标至今仍然成立，但它只能回答"代码是不是社区自己写的"，回答不了
+# "这个项目与社区是什么关系"。当时那份文档自己留了口子：「若社区与这些
+# 上游有正式协作关系，可以把对应账号加入白名单」。现在条件满足了。
+#
+# 注意：归为 self 只是让分类语义正确（不再被 --include-forks=self 误伤）。
+# GPUMD 的提交绝大多数仍来自上游作者，对外做表彰名单时该用
+# commits_not_in_upstream 这一列区分"社区独立开发"与"上游带入"。
 SELF_ORGS = {
     "deepmodeling",
     "abacusmodeling",
     "dptech-corp",
     "deepflamecfd",
     "mzjb",
+    "brucefan1983",
 }
 
 # 按仓库名硬排除的名单。值是写进日志的理由，各仓库原因不同，不能共用一句话。

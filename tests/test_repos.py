@@ -40,10 +40,19 @@ def test_ecosystem_upstreams_are_self(upstream):
     assert classify_upstream(upstream) == "self"
 
 
+def test_partner_personal_account_is_self():
+    """GPUMD 的上游是个人账号，但与社区有正式合作，按 self 处理。
+
+    2026-07-30 原本判为 external（依据 commits_not_in_upstream=0）。
+    修正依据是组织关系而非代码：社区为 GPUMD 办付费课程、走立项审批，
+    已完成两个季度的课程结算。理由详见 repos.py:SELF_ORGS 的注释。
+    """
+    assert classify_upstream("brucefan1983/GPUMD") == "self"
+
+
 @pytest.mark.parametrize("upstream", [
     "lammps/lammps",
     "plumed/plumed2",
-    "brucefan1983/GPUMD",
     "DEShawResearch/msys",
     "weihuayi/fealpy",
     "Roy-Kid/ADMP",
