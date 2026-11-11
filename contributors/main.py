@@ -24,7 +24,7 @@ from .git_stats import (
 )
 from .identity import IdentityResolver, is_ai_assistant, is_bot, is_marked_bot
 from .models import ApiStats
-from .notify import card, community, digest, feishu, period
+from .notify import card, community, digest, feishu, period, period_summary
 from .output import (
     SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
     write_markdown,
@@ -601,29 +601,30 @@ def _notify_period(cfg) -> int:
     """
     monthly = getattr(cfg, "monthly", False)
     label = "上月" if monthly else "上周"
-    start, end = (period.last_month_range() if monthly
-                  else period.last_week_range())
+    reference = getattr(cfg, "date", None)
+    anchor = datetime.fromisoformat(reference).replace(tzinfo=period.CST) if reference else None
+    start, end = (period.last_month_range if monthly else period.last_week_range)(anchor)
 
     store = EventStore(cfg.events_db)
     try:
         store.init_schema()
         events = store.events_between(start, end)
-        top_n = (period.TOP_N_MONTHLY if monthly else period.TOP_N_WEEKLY)
-        d = period.build_period(events, label, period.range_text(start, end),
-                                top_n=top_n)
+        feishu.load_env()
+        optimized = community.enabled()
+        summary = period_summary.summarize(store, events, cfg.org, start, end, monthly) if optimized else None
+        top_n = period.TOP_N_WEEKLY if optimized or not monthly else period.TOP_N_MONTHLY
+        report_events = summary.events if summary is not None else events
+        d = period.build_period(report_events, label, period.range_text(start, end),
+                                top_n=top_n, people_only=optimized)
         print(f"{label}（{d.range_text}）：{len(events)} 条事件，"
               f"{d.contributor_total} 位贡献者")
 
-        if d.is_empty and not cfg.notify_empty:
+        needs_notice = summary and (summary.stories or summary.missing or summary.incomplete or summary.unavailable)
+        if d.is_empty and not cfg.notify_empty and not needs_notice:
             print(f"{label}无活动，跳过推送（--notify-empty 可改变）")
             return 0
 
-        # 先加载 .env 再渲染：period.render_text 读 DASHBOARD_URL 决定是否
-        # 渲染看板链接。load_env 不覆盖已有变量（只补缺），提前调用安全。
-        # 与日报路径同理：之前 load_env 在 render_period 之后，周月报卡片的
-        # 看板链接在干净环境下永不渲染。
-        feishu.load_env()
-        payload = period.render_period(d)
+        payload = period.render_community(d, summary, monthly=monthly) if optimized else period.render_period(d)
         if cfg.notify_dry_run:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0
@@ -742,7 +743,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             recent_counts=recent_counts,
         )
 
-        if d.is_empty and not cfg.notify_empty:
+        if d.is_empty and not cfg.notify_empty and not (d.failed_repos or d.chronic_failures):
             # 每天推一条"今天没有新增"会很快让人把机器人静音
             print("无新增内容，跳过推送（--notify-empty 可改变）")
             return
@@ -754,9 +755,14 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         feishu.load_env()
         summary, summary_key = community.daily_summary(store, pending, cfg.org, win_start, win_end)
         optimized = None
-        if summary is not None:
+        if community.enabled():
             report_date = datetime.fromisoformat(win_start).astimezone(period.CST).date().isoformat()
-            optimized = card.render_community(d, summary, report_date)
+            status = "unavailable" if summary is community.UNAVAILABLE else "activity" if summary is None else "quiet"
+            stories = summary if isinstance(summary, list) else []
+            optimized = card.render_community(d, stories, report_date, status=status)
+            if optimized is None:
+                summary_key = None
+                optimized = card.render_community(d, [], report_date, status="unavailable")
         payload = optimized or card.render(d)
         if cfg.notify_dry_run:
             # dry-run 也存档：这样调通道时不必等真实增量，可以直接重发

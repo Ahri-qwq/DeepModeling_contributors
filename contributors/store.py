@@ -11,7 +11,7 @@ events.py，下游是 notify/。这个边界是为了以后加网页看板或多
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -549,6 +549,38 @@ class EventStore:
                 topics.append({"topic": topic, "title": story["title"], "stage": story["stage"],
                                "counts": story.get("resource_counts"), "reported_for": row["window_start"]})
         return topics
+
+    def tracked_report_repos(self, start: str, end: str) -> set:
+        rows = self.conn.execute(
+            "SELECT repo FROM repo_successes WHERE succeeded_at>=? AND succeeded_at<? "
+            "UNION SELECT repo FROM repo_failures WHERE failed_at>=? AND failed_at<?",
+            (start, end, start, end),
+        ).fetchall()
+        return {row["repo"] for row in rows}
+
+    def period_summary_context(self, earliest: str, start: str, end: str, monthly: bool) -> list:
+        """Earlier same-kind reports and whole weeks ending within a monthly window."""
+        kind = "monthly" if monthly else "weekly"
+        rows = self.conn.execute(
+            "SELECT window_start, stories FROM community_summaries WHERE window_start>=? AND window_start<? "
+            "UNION ALL SELECT window_start, stories FROM community_summaries WHERE ?=1 "
+            "AND window_start>=? AND window_start<? ORDER BY window_start DESC",
+            (f"period:{kind}:{earliest}", f"period:{kind}:{start}", monthly,
+             f"period:weekly:{earliest}", f"period:weekly:{end}"),
+        ).fetchall()
+        seen = set()
+        topics = []
+        for row in rows:
+            _, row_kind, date = row["window_start"].split(":", 2)
+            if row_kind == "weekly" and (datetime.fromisoformat(date) + timedelta(days=7)).isoformat() > end:
+                continue
+            for story in json.loads(row["stories"]):
+                topic = (story["repo"], story["topic"])
+                if topic not in seen:
+                    topics.append({"repo": story["repo"], "title": story["title"], "stage": story["stage"],
+                                   "window_start": date})
+                    seen.add(topic)
+        return topics[:18]
 
     def latest_digest(self) -> Optional[dict]:
         """最近一份战报的卡片 JSON。库里没有时返回 None。"""

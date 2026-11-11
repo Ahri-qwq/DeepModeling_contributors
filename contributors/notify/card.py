@@ -21,6 +21,8 @@ LINK_IN_PROSE = re.compile(
     r"|(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",
     re.I,
 )
+PROJECT_NAMES = {"abacus-develop": "ABACUS", "deepmd-kit": "DeePMD-kit", "dpnegf": "DPNEGF",
+                 "reacnetgenerator": "ReacNetGenerator", "uni-lab-os": "Uni-Lab-OS", "blog": "社区博客"}
 
 
 def is_plain_story_text(value: str) -> bool:
@@ -345,11 +347,7 @@ def _payload(title: str, text: str) -> dict:
     }
 
 
-def render_community(d: Digest, stories: list, report_date: str) -> dict | None:
-    """Render validated facts as a compact digest, with existing coverage alerts."""
-    if not stories:
-        return None
-
+def community_story_lines(stories: list) -> list | None:
     def story_text(value):
         return _escape(value).replace("*", "\\*")
 
@@ -359,19 +357,55 @@ def render_community(d: Digest, stories: list, report_date: str) -> dict | None:
             return None
         if lines:
             lines.append("")
-        lines.append(f"**{story_text(story['repo'])}｜{story_text(story['title'])}**")
+        repo = story["repo"]
+        name = "官网 Papers" if story.get("topic", "").startswith("papers/") else PROJECT_NAMES.get(repo.casefold(), repo)
+        lines.append(f"**{story_text(name)}｜{story_text(story['title'])}**")
         lines.append(story_text(story["text"]))
         context = [story["stage"]]
         context.extend(f"[@{person['login']}](https://github.com/{person['login']}) {person['role']}" for person in story["people"])
         context.extend(f"[{_escape(source['label'])}]({source['url']})" for source in story["sources"])
         lines.append(" · ".join(context))
-    lines.extend(["", _summary_line(d)])
+    return lines
+
+
+def report_links():
     links = []
-    for key, label in (("DASHBOARD_URL", "活动趋势与明细"), ("FEISHU_BITABLE_VIEW_URL", "贡献者明细")):
+    for key, label in (("DASHBOARD_URL", "查看可互动图表看板"),
+                       ("FEISHU_BITABLE_VIEW_URL", "查看一年内贡献者明细表格")):
         if url := os.environ.get(key):
             links.append(f"[{label}]({url})")
-    if links:
-        lines.append(" · ".join(links))
+    return " · ".join(links)
+
+
+def render_community(d: Digest, stories: list, report_date: str, *, status="quiet") -> dict | None:
+    """Render a daily summary or its compact status card."""
+    lines = community_story_lines(stories)
+    if lines is None:
+        return None
+    activity = bool(d.commit_count or d.merged_prs or d.opened_prs or d.issues)
+    incomplete = bool(d.failed_repos or d.chronic_failures)
+    short = not stories or any(story.get("verified_fallback") for story in stories)
+    if short and incomplete:
+        lines.insert(0, "部分仓库数据待补。")
+    if not stories:
+        if activity:
+            if status == "quiet":
+                lines.append("已采集的活动只有例行更新。" if incomplete else "昨日只有例行更新。")
+            else:
+                counts = ((d.opened_count, "项新提案"), (d.merged_count, "项已合并改动"),
+                          (d.issue_count, "条问题或建议"), (d.commit_count, "次代码提交"))
+                overview = "、".join(f"{count} {label}" for count, label in counts if count)
+                lines.append(f"{'已覆盖范围内' if incomplete else '昨日'}记录到 {overview}。")
+                if status == "unavailable":
+                    lines.append("摘要暂未生成。")
+        else:
+            lines.append("已采集的仓库在本期暂无新增记录。" if incomplete else "本期未采集到新增社区活动。")
+            if d.recent_counts:
+                lines.append(_recent_line(d))
+    if activity and not short:
+        lines.extend(["", _summary_line(d)])
+    if links := report_links():
+        lines.append(links)
     lines.extend(line for line in (_failed_line(d), _chronic_line(d)) if line)
     payload = _payload(_title(d, report_date), "\n".join(lines))
     return payload if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT else None

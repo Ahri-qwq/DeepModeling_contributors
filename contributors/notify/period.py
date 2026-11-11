@@ -9,12 +9,14 @@
 
 不逐条列条目：一周几百条会把群消息刷屏，周月报的价值在趋势而非明细。
 """
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from .card import SIZE_LIMIT, _escape
+from ..identity import is_ai_assistant, is_bot
+from .card import SIZE_LIMIT, _escape, _payload, community_story_lines, report_links
 
 # 排行榜取前几名。周报取 5，月报取 10 —— 月度数据量大（实测一个月
 # 1583 条事件、71 位贡献者），前 5 名的区分度不够。
@@ -35,6 +37,7 @@ class PeriodDigest:
     merged_count: int = 0
     opened_count: int = 0
     issue_count: int = 0
+    release_count: int = 0
     top_contributors: list = field(default_factory=list)   # [(login, n)]
     top_repos: list = field(default_factory=list)          # [(repo, n)]
     # 仓库 × 意图矩阵：[(repo, [(类别, n), ...]), ...]。
@@ -46,7 +49,7 @@ class PeriodDigest:
     @property
     def is_empty(self) -> bool:
         return not (self.commit_count or self.merged_count
-                    or self.opened_count or self.issue_count)
+                    or self.opened_count or self.issue_count or self.release_count)
 
 
 def _cst_midnight_utc(d: datetime) -> str:
@@ -164,10 +167,11 @@ def range_text(start_iso: str, end_iso: str) -> str:
 
 
 def build_period(events: list, label: str, rng: str,
-                 top_n: int = TOP_N_WEEKLY) -> PeriodDigest:
+                 top_n: int = TOP_N_WEEKLY, *, people_only: bool = False) -> PeriodDigest:
     """把区间内的事件聚合成周报/月报结构。"""
     d = PeriodDigest(label=label, range_text=rng)
     by_author: dict = {}
+    names = {}
     by_repo: dict = {}
 
     for ev in events:
@@ -180,10 +184,14 @@ def build_period(events: list, label: str, rng: str,
                 d.opened_count += 1
         elif ev.kind == "issue":
             d.issue_count += 1
+        elif ev.kind == "release":
+            d.release_count += 1
 
         # author 为 null 的事件（已删号用户）不进榜，否则会冒出空名字
-        if ev.author_login:
-            by_author[ev.author_login] = by_author.get(ev.author_login, 0) + 1
+        if ev.author_login and not (people_only and (is_bot(ev.author_login) or is_ai_assistant(ev.author_login))):
+            key = ev.author_login.casefold() if people_only else ev.author_login
+            by_author[key] = by_author.get(key, 0) + 1
+            names.setdefault(key, ev.author_login)
         if ev.repo:
             by_repo[ev.repo] = by_repo.get(ev.repo, 0) + 1
 
@@ -206,11 +214,54 @@ def build_period(events: list, label: str, rng: str,
     ]
 
     d.contributor_total = len(by_author)
-    d.top_contributors = sorted(by_author.items(),
-                                key=lambda kv: (-kv[1], kv[0]))[:top_n]
+    d.top_contributors = [(names[key], count) for key, count in
+                          sorted(by_author.items(), key=lambda kv: (-kv[1], kv[0]))[:top_n]]
     d.top_repos = sorted(by_repo.items(),
                          key=lambda kv: (-kv[1], kv[0]))[:top_n]
     return d
+
+
+def render_community(d: PeriodDigest, summary, *, monthly: bool) -> dict:
+    title = f"DeepModeling 社区{'月' if monthly else '周'}报 {d.range_text}"
+    lines = []
+    if summary.incomplete:
+        lines.append("部分数据范围暂未核实。")
+    if summary.missing:
+        names = "、".join(_escape(repo) for repo in summary.missing[:5])
+        rest = f"等 {len(summary.missing)} 个仓库" if len(summary.missing) > 5 else ""
+        lines.append(f"数据待补 · {names}{rest}")
+    stories = summary.stories
+    if monthly:
+        releases = [story for story in stories if story["stage"] == "已正式发布"]
+        progress = [story for story in stories if story["stage"] != "已正式发布"]
+    else:
+        releases, progress = [], stories
+    if releases and progress:
+        release_lines = community_story_lines(releases)
+        progress_lines = community_story_lines(progress)
+        body = (["**已交付**", *release_lines, "", "**测试版与持续进展**", *progress_lines]
+                if release_lines is not None and progress_lines is not None else None)
+    else:
+        body = community_story_lines(stories)
+    if body:
+        lines.extend(body)
+    elif summary.unavailable or body is None:
+        lines.append("摘要暂未生成。")
+    elif not d.is_empty:
+        lines.append("本期有公开活动，暂无可概括的进展。")
+    else:
+        lines.append("已覆盖范围内暂无新增活动。" if lines else "本期暂无新增活动。")
+
+    footer = [f"共 {d.contributor_total} 位贡献者参与"] if not d.is_empty else []
+    for label, ranks in (("活跃贡献者", d.top_contributors), ("活跃仓库", d.top_repos)):
+        if ranks:
+            footer.append(f"**{label}** · " + " · ".join(f"{_escape(name)} {count}" for name, count in ranks[:5]))
+    if links := report_links():
+        footer.append(links)
+    payload = _payload(title, "\n".join([*lines, "", *footer]))
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > SIZE_LIMIT:
+        return _payload(title, "\n".join(["本期活动已记录。", *footer]))
+    return payload
 
 
 def render_text(d: PeriodDigest) -> str:
