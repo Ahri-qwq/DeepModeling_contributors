@@ -546,15 +546,7 @@ def _read_rows_csv(path: Path) -> list:
 
 
 def _read_run_meta(path: Path) -> dict:
-    """读回 --fetch 那步写下的 run_meta.json。
-
-    存在的理由：拆分模式下推送是独立一次运行，内存里没有采集结果。
-    以前这里凭空造了个空 meta，于是 failures 恒为空 —— 日报永远不会
-    点名失败仓库，而全流程模式却会。日常跑的正是拆分模式，等于这个
-    提示从来没生效过。
-
-    读不到就返回空字典：底部累计与失败行一起省略，好过让推送失败。
-    """
+    """读回抓取的覆盖统计。缺采判定从事件库按时间窗口读取。"""
     if not path.is_file():
         return {}
     try:
@@ -562,7 +554,7 @@ def _read_run_meta(path: Path) -> dict:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (ValueError, OSError) as exc:
-        print(f"注意：{path} 读取失败（{exc}），失败仓库提示将省略")
+        print(f"注意：{path} 读取失败（{exc}），采集覆盖统计将省略")
         return {}
 
 
@@ -581,11 +573,8 @@ def _notify_only(cfg, out: Path) -> int:
     meta = {"contributors": len(summarize(rows)) if rows else None,
             "repos_processed": saved.get("repos_processed"),
             "repos_in_scope": saved.get("repos_in_scope"),
-            "failures": saved.get("failures", {}),
-            "succeeded": saved.get("succeeded", []),
             "window": {"since": "", "until": ""}}
-    if meta["failures"]:
-        print(f"上次抓取有 {len(meta['failures'])} 个仓库失败，将在日报中说明")
+    # 采集成功和失败已在实际抓取时入库；推送不能把旧结果写到新的时间窗口。
     try:
         _record_and_notify([], meta, cfg, 0, rows)
     except Exception as exc:                       # noqa: BLE001
@@ -701,10 +690,9 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             print("首次运行，已建库但不推送；下次运行起才有增量")
             return
 
-        # 按锚定窗口取内容：_report_date 返回今天（东八区），daily_range(今天)
-        # = 昨天的自然日窗口（[昨天 0:00, 今天 0:00) 北京），与推送时刻无关。
-        # 补推时传 --date 窗口结束日；同一窗口跑多次，内容恒定可复现。
-        win_start, win_end = period.daily_range(_report_date(cfg))
+        # 报告日既是标题日期，也是入库窗口的结束日。补推用同一个 --date。
+        report_day = _report_date(cfg)
+        win_start, win_end = period.daily_range(report_day)
         pending = store.pending_in_window(win_start, win_end)
         totals = _year_totals(rows)
 
@@ -717,7 +705,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         chronic_reasons = store.last_failure_reasons()
 
         # 无增量时准备一句近期活动量。群里一天没消息，第一反应是脚本挂了，
-        # 所以宁可发一条"昨日无更新 + 本周至今 N 次提交"。
+        # 所以宁可发一条"本期无更新 + 本周至今 N 次提交"。
         recent_label, recent_counts = "", {}
         if not (pending.new_events or pending.state_changes):
             recent_label, recent_counts = period.pick_recent(
@@ -726,8 +714,6 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         d = digest.build(
             pending,
             last_notify_at=_last_notify_time(store),
-            # 标题日期由 win_end 决定：daily_range(day) 的 win_end 是 day 0:00，
-            # 转成北京日期就是 day 本身，即窗口结束日。
             now=datetime.fromisoformat(win_end),
             total_contributors=meta.get("contributors"),
             total_commits=totals["commits"],
@@ -756,7 +742,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         summary, summary_key = community.daily_summary(store, pending, cfg.org, win_start, win_end)
         optimized = None
         if community.enabled():
-            report_date = datetime.fromisoformat(win_start).astimezone(period.CST).date().isoformat()
+            report_date = report_day.isoformat()
             status = "unavailable" if summary is community.UNAVAILABLE else "activity" if summary is None else "quiet"
             stories = summary if isinstance(summary, list) else []
             optimized = card.render_community(d, stories, report_date, status=status)
@@ -794,18 +780,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 
 
 def _report_date(cfg):
-    """--date 指定的日报日期；未指定时取今天（东八区）。
-
-    daily_range(day) 的语义是以 day 为窗口结束日：返回
-    [day-1 0:00, day 0:00) 东八区半开区间。要覆盖昨天落库的
-    事件，必须传今天——daily_range(今天) 恰好是昨天的自然日窗口。
-
-    旧实现传昨天，导致 daily_range(昨天) = 前天的窗口，推送
-    内容错位一天。
-
-    --date 参数含义：指定窗口结束日，即 --date 2026-09-08
-    覆盖 9/7 0:00 ~ 9/8 0:00 北京的落库事件，标题为 2026-09-08。
-    """
+    """返回报告日：北京时间今天，或手动指定的 --date。"""
     raw = getattr(cfg, "date", None)
     if not raw:
         return datetime.now(timezone.utc).astimezone(period.CST).date()

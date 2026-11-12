@@ -82,11 +82,11 @@ def test_community_card_shows_both_links_below_activity(monkeypatch):
     d = digest.build(UpsertResult([_pr("deepmd-kit", 1, "改动")], []))
     output = card.render_community(d, [], "2026-11-10", status="activity")
     lines = output["card"]["elements"][0]["text"]["content"].splitlines()
-    assert "1 项新提案" in lines[-2]
-    assert lines[-1] == (
-        "[查看可互动图表看板](https://example.com/dashboard) · "
-        "[查看一年内贡献者明细表格](https://example.com/contributors)"
-    )
+    assert "1 项新提案" in lines[-3]
+    assert lines[-2:] == [
+        "[📊 详细条目和看板](https://example.com/dashboard)",
+        "[📋 近一年明细表格](https://example.com/contributors)",
+    ]
 
 
 def test_proposal_cannot_be_rendered_as_merged():
@@ -306,7 +306,7 @@ def test_verified_routine_updates_use_quiet_card_without_a_model(tmp_path, monke
         store.init_schema()
         assert community.daily_summary(store, pending, "deepmodeling", START, END) == ([], None)
     payload = card.render_community(digest.build(pending), [], "2026-11-10")
-    assert "昨日只有例行更新" in payload["card"]["elements"][0]["text"]["content"]
+    assert "本期只有例行更新" in payload["card"]["elements"][0]["text"]["content"]
 
 
 def test_no_data_and_partial_coverage_get_distinct_wording():
@@ -325,19 +325,31 @@ def test_push_pipeline_uses_short_card_when_summary_has_no_story(tmp_path, monke
     with closing(EventStore(db_path)) as store:
         store.init_schema()
         run_id = store.begin_run()
-        store.upsert_events([_pr("blog", 378, "改进教程入口"), _pr("blog", 379, "修复下载步骤")], run_id)
-        store.conn.execute("UPDATE events SET first_seen_at=?", ("2026-11-10T01:00:00+00:00",))
+        store.upsert_events([_pr("blog", n, title) for n, title in [
+            (377, "窗口前"), (378, "改进教程入口"), (379, "修复下载步骤"), (380, "窗口后"),
+        ]], run_id)
+        store.conn.executemany("UPDATE events SET first_seen_at=? WHERE number=?", [
+            ("2026-11-11T21:59:59+00:00", 377),  # 11/12 05:59:59
+            ("2026-11-11T22:00:00+00:00", 378),  # 11/12 06:00
+            ("2026-11-12T18:30:00+00:00", 379),  # 11/13 02:30
+            ("2026-11-12T22:00:00+00:00", 380),  # 11/13 06:00
+        ])
         store.conn.commit()
         store.finish_run(run_id, repos_processed=1)
     monkeypatch.setenv("COMMUNITY_SUMMARY_ENABLED", "1")
     monkeypatch.setenv("COMMUNITY_DEEPSEEK_API_KEY", "test")
-    monkeypatch.setattr(community, "_generate", lambda *args: None)
-    cfg = SimpleNamespace(events_db=db_path, date="2026-11-11", org="deepmodeling",
+    def generate(current, *args):
+        assert {r["number"] for r in current.values()} == {378, 379}
+        return None
+
+    monkeypatch.setattr(community, "_generate", generate)
+    cfg = SimpleNamespace(events_db=db_path, date="2026-11-13", org="deepmodeling",
                           notify=False, notify_dry_run=True, notify_empty=False)
     _record_and_notify([], {"window": {"since": "", "until": ""}}, cfg, 0, [])
     output = capsys.readouterr().out
     payload = json.loads(output[output.index('{\n  "msg_type"'):])
     body = payload["card"]["elements"][0]["text"]["content"]
+    assert payload["card"]["header"]["title"]["content"] == "DeepModeling 社区日报 2026-11-13"
     assert "2 项新提案" in body
     assert "改进教程入口" not in body and "修复下载步骤" not in body
 

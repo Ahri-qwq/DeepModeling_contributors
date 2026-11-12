@@ -760,6 +760,22 @@ def test_success_outside_window_does_not_clear(store):
         == {"tiny": 1}
 
 
+def test_legacy_push_status_does_not_hide_real_fetch_failure(store):
+    """首份新窗口包含此前的推送记录，不能把重记的成功当作补采成功。"""
+    push = store.begin_run()
+    store.finish_run(push, repos_processed=0)
+    store.save_digest(push, {}, sent=True)
+    store.record_successes(push, ["tiny"])
+    store.record_failures(push, {"old": "上轮失败"})
+
+    fetch = store.begin_run(since="2025-11-12", until="2026-11-12")
+    store.finish_run(fetch, repos_processed=0)
+    store.record_failures(fetch, {"tiny": "本轮失败"})
+
+    assert store.repos_missing_since("2026-01-01T00:00:00+00:00") == {"tiny": 1}
+    assert store._fetch_run_ids() == [fetch]
+
+
 # ---- 建库基线：只挡首次录入的历史积压 ----
 
 

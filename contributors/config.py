@@ -211,7 +211,7 @@ def parse_args(argv: list, today: Optional[date] = None) -> Config:
                    help="只剩最后一个仓库待重试时的间隔秒数（默认 30）。"
                         "还有别的仓库在跑时不等待")
     p.add_argument("--date", metavar="YYYY-MM-DD",
-                   help="报告锚定日（东八区）。日报覆盖前一自然日，周报和月报覆盖锚定日之前的完整周期。")
+                   help="报告日期（东八区）。日报默认取前日 06:00 至当日 06:00 的入库增量，历史补推沿用旧窗口；周报和月报取之前的完整周期。")
     p.add_argument("--weekly", action="store_true",
                    help="推送上周汇总（周一跑）。按事件真实时间统计，"
                         "汇总加活跃贡献者/仓库排行榜，不跑采集管线")

@@ -160,10 +160,10 @@ class TestRenderText:
     def test_empty_digest_says_so(self):
         """无增量时明说，而不是只留一个标题。
 
-        文案 2026-08-12 从"无新增"改为"昨日无更新"：日报不再因为空增量
+        文案 2026-08-12 从"无新增"改为"本期无更新"：日报不再因为空增量
         就跳过不发，而是明说无更新并贴一句近期活动量，见 TestQuietDayFallback。
         """
-        assert "昨日无更新" in card.render_text(build(UpsertResult([], [])))
+        assert "本期无更新" in card.render_text(build(UpsertResult([], [])))
 
     def test_empty_section_is_not_rendered(self):
         d = build(UpsertResult([_commit("a")], []))
@@ -499,7 +499,7 @@ class TestLoadEnv:
 
 
 class TestDailyHeadline:
-    """固定每天跑时的文案：正常写"昨日社区动态"，异常时回退。
+    """固定每天跑时的文案：正常写"本期社区动态"，异常时回退。
 
     增量按"本次运行新看到的"判定，不是按事件时间。固定 11 点跑保证的是
     运行时间固定，不保证内容都发生在昨天 —— 推送失败补推时，卡片里装的
@@ -511,7 +511,7 @@ class TestDailyHeadline:
                   last_notify_at="2026-08-10T02:00:00+00:00",
                   now=datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc))
         text = card.render_text(d)
-        assert "昨日社区动态" in text
+        assert "本期社区动态" in text
         assert "自上次汇报" not in text
 
     def test_gap_longer_than_a_day_falls_back(self):
@@ -521,19 +521,19 @@ class TestDailyHeadline:
                   now=datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc))
         text = card.render_text(d)
         assert "自上次汇报" in text
-        assert "昨日社区动态" not in text
+        assert "本期社区动态" not in text
 
     def test_slightly_late_run_still_says_yesterday(self):
         """机器起停、任务延迟让间隔浮动到 30 小时，仍算正常日报。"""
         d = build(UpsertResult([_commit("a")], []),
                   last_notify_at="2026-08-09T20:00:00+00:00",
                   now=datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc))
-        assert "昨日社区动态" in card.render_text(d)
+        assert "本期社区动态" in card.render_text(d)
 
     def test_no_previous_notify_falls_back(self):
         """从没成功推送过时不能称"昨日"。"""
         d = build(UpsertResult([_commit("a")], []), last_notify_at="")
-        assert "昨日社区动态" not in card.render_text(d)
+        assert "本期社区动态" not in card.render_text(d)
 
 
 class TestFailedRepos:
@@ -726,7 +726,7 @@ class TestCommitFallback:
 
 
 class TestQuietDayFallback:
-    """昨日无更新时也要发，并贴一个非零区间的量。
+    """本期无更新时也要发，并贴一个非零区间的量。
 
     不发的话，群里第一反应是"脚本挂了"。发一条明说"无更新"再带上近期
     活动量，既排除了故障怀疑，也让人知道系统在正常工作。
@@ -895,7 +895,7 @@ class TestChronicFailureReasons:
         assert "deepmd-kit" in failed_line[0]
 
     def test_chronic_shown_when_no_increment(self):
-        """昨日无更新那条回退卡片里同样要告警。"""
+        """本期无更新那条回退卡片里同样要告警。"""
         d = build(UpsertResult([], []),
                   chronic_failures={"abacus-develop": 5},
                   recent_label="本周至今", recent_counts={"commit": 3})
@@ -994,6 +994,15 @@ class TestDailyWindowAnchoring:
         start13, _ = period.daily_range(_d(2026, 8, 13))
         assert end12 == start13
 
+    def test_cutover_uses_six_am_and_new_windows_meet(self):
+        from datetime import date as _d
+        _, old_end = period.daily_range(_d(2026, 11, 12))
+        first_start, first_end = period.daily_range(_d(2026, 11, 13))
+        second_start, _ = period.daily_range(_d(2026, 11, 14))
+        assert old_end == "2026-11-11T16:00:00+00:00"  # 11/12 00:00 CST
+        assert first_start == "2026-11-11T22:00:00+00:00"  # 11/12 06:00 CST
+        assert first_end == second_start == "2026-11-12T22:00:00+00:00"
+
     def test_defaults_to_today_in_cst(self):
         from datetime import datetime as _dt, timezone as _tz
         # 东八区 8-13 09:00（UTC 8-13 01:00）时，"今天"是 8-13
@@ -1006,9 +1015,7 @@ class TestDailyWindowAnchoring:
 class TestReportDate:
     """_report_date：未指定 --date 时取今天（东八区），作为 daily_range 的窗口结束日。
 
-    daily_range(day) 返回 [day-1 0:00, day 0:00) 东八区半开区间，
-    所以要覆盖昨天落库的事件，必须传今天。旧实现传昨天导致窗口落到
-    前天（错位一天）。不能写死钟点——只验证「今天」。
+    daily_range(day) 的结束日期是 day。不能写死钟点——只验证「今天」。
     """
 
     def test_no_date_returns_today_in_cst(self):

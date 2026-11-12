@@ -41,10 +41,19 @@ def _excluded_repos() -> tuple:
 # 这里在查询层补第二道，让"排除"对历史数据同样成立。
 _EXCLUDED = _excluded_repos()
 _EXCL_PLACEHOLDERS = ",".join("?" * len(_EXCLUDED))
-# 用于直接查 events 表
+# 用于直接查询含 repo 字段的单张表
 EXCLUDE_SQL = f" AND repo NOT IN ({_EXCL_PLACEHOLDERS})"
 # 用于 event_state_changes JOIN events 的场景，需要显式限定表别名
 EXCLUDE_SQL_E = f" AND e.repo NOT IN ({_EXCL_PLACEHOLDERS})"
+
+# 旧版 --only-notify 会把上一轮抓取的成功/失败重记在推送运行上。
+# 识别有推送标记或卡片存档、没有抓取日期和已处理仓库的旧记录。
+_LEGACY_PUSH_RUN = (
+    "(r.since = '' AND r.until = '' AND r.repos_processed = 0 "
+    "AND (r.notified IS NOT NULL OR EXISTS "
+    "(SELECT 1 FROM digests d WHERE d.run_id = r.run_id)))"
+)
+
 
 # 失败原因分类用的关键词。判定顺序是"先永久后网络"：一次请求可能
 # 既超时又返回 404，此时该按永久处理 —— 永久错误重试再多也没用。
@@ -407,21 +416,23 @@ class EventStore:
         所以窗口外的成功不算数。今天照常提醒"未能抓取…将累计到明天"，
         而那句话恰好是准确的。
 
+        已排除仓库和旧版推送重记的状态不参与判定；保留原记录供排查。
         end 省略时表示"从 start 至今"，供不按窗口取数的调用方使用。
         """
         args = [start] if end is None else [start, end]
         bound = "" if end is None else " AND failed_at < ?"
         rows = self.conn.execute(
-            f"SELECT repo, COUNT(*) n FROM repo_failures "
-            f"WHERE failed_at >= ?{bound} GROUP BY repo", args).fetchall()
+            "SELECT repo, COUNT(*) n FROM repo_failures JOIN runs r USING (run_id) "
+            f"WHERE failed_at >= ?{bound}{EXCLUDE_SQL} AND NOT {_LEGACY_PUSH_RUN} GROUP BY repo",
+            (*args, *_EXCLUDED)).fetchall()
         failed = {r["repo"]: r["n"] for r in rows}
         if not failed:
             return {}
 
         bound = "" if end is None else " AND succeeded_at < ?"
         rows = self.conn.execute(
-            f"SELECT DISTINCT repo FROM repo_successes "
-            f"WHERE succeeded_at >= ?{bound}", args).fetchall()
+            "SELECT DISTINCT repo FROM repo_successes JOIN runs r USING (run_id) "
+            f"WHERE succeeded_at >= ?{bound} AND NOT {_LEGACY_PUSH_RUN}", args).fetchall()
         recovered = {r["repo"] for r in rows}
         return {name: n for name, n in failed.items() if name not in recovered}
 
@@ -439,10 +450,10 @@ class EventStore:
         "没挂"，连续数就断了。
         """
         rows = self.conn.execute(
-            "SELECT run_id FROM runs WHERE finished_at IS NOT NULL "
+            "SELECT run_id FROM runs r WHERE finished_at IS NOT NULL "
             "AND (repos_processed > 0 OR run_id IN "
             "     (SELECT DISTINCT run_id FROM repo_failures)) "
-            "ORDER BY run_id DESC LIMIT ?",
+            f"AND NOT {_LEGACY_PUSH_RUN} ORDER BY run_id DESC LIMIT ?",
             (limit,)).fetchall()
         return [r["run_id"] for r in rows]
 

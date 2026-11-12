@@ -1,6 +1,6 @@
 """周报与月报：按事件真实时间聚合，汇总加排行榜。
 
-与日报的口径不同，这是有意的：日报按 first_seen_run（本次运行新看到的）
+与日报的口径不同，这是有意的：日报按入库时间（这段时间内新看到的）
 判定以保证不漏报——author date 是代码写成时间，有人本地攒两周才推，按
 事件时间判定就永远进不了任何一天的日报。而周报月报问的是"上周/上月发生
 了什么"，那是时间概念，只能按 event_time 算。
@@ -10,7 +10,6 @@
 不逐条列条目：一周几百条会把群消息刷屏，周月报的价值在趋势而非明细。
 """
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -83,12 +82,12 @@ def last_month_range(now: Optional[datetime] = None) -> tuple:
     return (_cst_midnight_utc(first_prev), _cst_midnight_utc(first_this))
 
 
-# 日报窗口的锚点小时（东八区）。窗口是"昨天这个点到今天这个点"。
-# hour=0 即整个自然日 0:00~24:00。
-DAILY_ANCHOR_HOUR = 0
+# 2026-11-13 的日报开始使用凌晨抓取。历史报告补推沿用当时的 00:00 锚点。
+DAILY_CUTOVER_DATE = date(2026, 11, 13)
+DAILY_ANCHOR_HOUR = 6
 
 
-def daily_range(day: Optional[date] = None, hour: int = DAILY_ANCHOR_HOUR,
+def daily_range(day: Optional[date] = None, hour: Optional[int] = None,
                 now: Optional[datetime] = None) -> tuple:
     """某日日报的窗口：前一天 hour 点到当天 hour 点（东八区），返回 UTC 半开区间。
 
@@ -102,6 +101,8 @@ def daily_range(day: Optional[date] = None, hour: int = DAILY_ANCHOR_HOUR,
     if day is None:
         ref = (now or datetime.now(timezone.utc)).astimezone(CST)
         day = ref.date()
+    if hour is None:
+        hour = DAILY_ANCHOR_HOUR if day >= DAILY_CUTOVER_DATE else 0
     end_local = datetime(day.year, day.month, day.day, hour, tzinfo=CST)
     start_local = end_local - timedelta(days=1)
     return (start_local.astimezone(timezone.utc).isoformat(),
@@ -256,8 +257,7 @@ def render_community(d: PeriodDigest, summary, *, monthly: bool) -> dict:
     for label, ranks in (("活跃贡献者", d.top_contributors), ("活跃仓库", d.top_repos)):
         if ranks:
             footer.append(f"**{label}** · " + " · ".join(f"{_escape(name)} {count}" for name, count in ranks[:5]))
-    if links := report_links():
-        footer.append(links)
+    footer.extend(report_links())
     payload = _payload(title, "\n".join([*lines, "", *footer]))
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > SIZE_LIMIT:
         return _payload(title, "\n".join(["本期活动已记录。", *footer]))
@@ -279,13 +279,7 @@ def render_text(d: PeriodDigest) -> str:
         parts.append(f"{d.issue_count} 个 issue")
     lines.append(" · ".join(parts) if parts else "无活动")
 
-    # 看板链接：环境变量未配置时静默跳过。文案跟日报保持一致 —— 同一个群里
-    # 日报周报交替出现，同一个看板在两种卡片里叫不同名字，读的人会以为是
-    # 两个不同的东西。多维表格链接故意不放：那张表是滚动一年的快照，与
-    # "上周/上月"的周期对不上，并排出现反而误导。
-    dashboard_url = os.environ.get("DASHBOARD_URL", "")
-    if dashboard_url:
-        lines.append(f"[查看可互动图表看板]({dashboard_url})")
+    lines.extend(report_links())
 
     if d.contributor_total:
         lines.append(f"共 {d.contributor_total} 位贡献者参与")

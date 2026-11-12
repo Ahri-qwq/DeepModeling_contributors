@@ -145,13 +145,13 @@ YESTERDAY_MAX_HOURS = 36
 def _headline(d: Digest) -> str:
     """正文第一行。
 
-    固定每天跑时写"昨日社区动态"。但增量是按"本次运行新看到的"判定的，
+    固定每天跑时写"本期社区动态"。但增量是按"本次运行新看到的"判定的，
     推送失败补推时卡片里装的是两天的内容，此时必须回退到带日期的说法 ——
     否则文案就在说谎。从没成功推送过时同样回退。
     """
     hours = d.hours_since_notify
     if hours is not None and hours <= YESTERDAY_MAX_HOURS:
-        return "昨日社区动态"
+        return "本期社区动态"
     if d.since_text:
         return f"自上次汇报（{d.since_text}）以来："
     return "自上次汇报以来："
@@ -213,13 +213,13 @@ def _chronic_line(d: Digest) -> str:
 
 
 def _recent_line(d: Digest) -> str:
-    """昨日无更新时贴的近期活动量。只给数字，不列明细。
+    """本期无更新时贴的近期活动量。只给数字，不列明细。
 
     存在的理由：群里一天没消息，第一反应是"脚本挂了"。发一条明说无更新、
     再带上近期活动量，既排除故障怀疑，也说明系统在正常工作。
 
     注意口径不同源：日报按"本次运行新看到的"判定，而这个数字按事件真实
-    时间查库。可能出现"昨日无更新"但本周至今有 20 次提交 —— 那 20 次是
+    时间查库。可能出现"本期无更新"但本周至今有 20 次提交 —— 那 20 次是
     前几天看到的，两者不矛盾，故文案里明确写出区间名。
     """
     if not d.recent_counts:
@@ -240,13 +240,8 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
                         or d.opened_prs or d.issues)
     if no_increment:
         # 无更新也要发：不发的话群里第一反应是脚本挂了
-        lines = [_headline(d), "昨日无更新"]
-        dashboard_url = os.environ.get("DASHBOARD_URL", "")
-        if dashboard_url:
-            lines.append(f"[查看可互动图表看板]({dashboard_url})")
-        bitable_url = os.environ.get("FEISHU_BITABLE_VIEW_URL", "")
-        if bitable_url:
-            lines.append(f"[查看一年内贡献者明细表格]({bitable_url})")
+        lines = [_headline(d), "本期无更新"]
+        lines.extend(report_links())
         lines += ["", _recent_line(d)]
         totals = _totals_line(d)
         if totals:
@@ -262,17 +257,7 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
 
     lines = [_headline(d), _summary_line(d)]
 
-    # 看板链接：环境变量未配置时静默跳过，不影响本地跑和 dry-run
-    dashboard_url = os.environ.get("DASHBOARD_URL", "")
-    if dashboard_url:
-        lines.append(f"[查看可互动图表看板]({dashboard_url})")
-
-    # 多维表格链接：同样的静默跳过模式。存的是带租户子域名的完整访问
-    # 链接（形如 https://<租户子域名>.feishu.cn/base/<app_token>?table=<table_id>），
-    # 通用 open.feishu.cn 域名的链接打不开，见飞书多维表格接入报告。
-    bitable_url = os.environ.get("FEISHU_BITABLE_VIEW_URL", "")
-    if bitable_url:
-        lines.append(f"[查看一年内贡献者明细表格]({bitable_url})")
+    lines.extend(report_links())
 
     # PR 按「在干什么」分区，而不是按合并/新建。读日报的是运营，
     # 他们要的是「社区最近在推新功能还是在修 bug」，不是 PR 的生命周期状态。
@@ -368,13 +353,14 @@ def community_story_lines(stories: list) -> list | None:
     return lines
 
 
-def report_links():
+def report_links() -> list[str]:
+    """卡片入口各占一行，未配置的链接省略。"""
     links = []
-    for key, label in (("DASHBOARD_URL", "查看可互动图表看板"),
-                       ("FEISHU_BITABLE_VIEW_URL", "查看一年内贡献者明细表格")):
+    for key, label in (("DASHBOARD_URL", "📊 详细条目和看板"),
+                       ("FEISHU_BITABLE_VIEW_URL", "📋 近一年明细表格")):
         if url := os.environ.get(key):
             links.append(f"[{label}]({url})")
-    return " · ".join(links)
+    return links
 
 
 def render_community(d: Digest, stories: list, report_date: str, *, status="quiet") -> dict | None:
@@ -390,12 +376,12 @@ def render_community(d: Digest, stories: list, report_date: str, *, status="quie
     if not stories:
         if activity:
             if status == "quiet":
-                lines.append("已采集的活动只有例行更新。" if incomplete else "昨日只有例行更新。")
+                lines.append("已采集的活动只有例行更新。" if incomplete else "本期只有例行更新。")
             else:
                 counts = ((d.opened_count, "项新提案"), (d.merged_count, "项已合并改动"),
                           (d.issue_count, "条问题或建议"), (d.commit_count, "次代码提交"))
                 overview = "、".join(f"{count} {label}" for count, label in counts if count)
-                lines.append(f"{'已覆盖范围内' if incomplete else '昨日'}记录到 {overview}。")
+                lines.append(f"{'已覆盖范围内' if incomplete else '本期'}记录到 {overview}。")
                 if status == "unavailable":
                     lines.append("摘要暂未生成。")
         else:
@@ -404,8 +390,7 @@ def render_community(d: Digest, stories: list, report_date: str, *, status="quie
                 lines.append(_recent_line(d))
     if activity and not short:
         lines.extend(["", _summary_line(d)])
-    if links := report_links():
-        lines.append(links)
+    lines.extend(report_links())
     lines.extend(line for line in (_failed_line(d), _chronic_line(d)) if line)
     payload = _payload(_title(d, report_date), "\n".join(lines))
     return payload if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT else None

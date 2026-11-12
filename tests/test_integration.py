@@ -89,18 +89,13 @@ def mk_repo(name="tiny"):
 
 
 def _current_window_date_cst() -> str:
-    """当前时刻所属日报窗口的日期（东八区）。
-
-    日报窗口锚定当天 0 点（整个自然日），"此刻"落在哪个窗口取决于当前时刻：
-    此刻的 CST 小时数必然 >= 0（锚点），所以此刻永远已经过了"今天"窗口的
-    锚点，落在明天的窗口（daily_range(tomorrow)）里。
-    不能写死钟点——基线时刻是"现在"，硬编码钟点在别的时段跑会失效。
-    """
-    from contributors.notify.period import CST, DAILY_ANCHOR_HOUR
-    now_cst = datetime.now(timezone.utc).astimezone(CST)
-    if now_cst.hour < DAILY_ANCHOR_HOUR:
-        return now_cst.date().isoformat()
-    return (now_cst.date() + timedelta(days=1)).isoformat()
+    """当前入库时刻对应的报告日，切换日 00:00–06:00 用显式窗口测试。"""
+    from contributors.notify.period import CST, daily_range
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(CST).date()
+    if now < datetime.fromisoformat(daily_range(day)[1]):
+        return day.isoformat()
+    return (day + timedelta(days=1)).isoformat()
 
 
 def test_collects_commits_from_all_branches(tiny_repo):
@@ -926,8 +921,7 @@ def test_no_retry_when_all_succeed(tiny_repo, monkeypatch):
 # --- 拆分模式下的失败可见性 ---
 #
 # 日常跑的就是拆分模式（--fetch 一次 run、--only-notify 另一次 run）。
-# 以前 _notify_only 凭空造空 meta，failures 恒为空，日报永远不点名失败
-# 仓库 —— 而全流程模式却会。等于这个提示在生产路径上从来没生效过。
+# 缺采判断只使用抓取时写进事件库的时间戳，推送不重复记账。
 
 
 def _seed_baseline(m, cfg):
@@ -940,8 +934,8 @@ def _seed_baseline(m, cfg):
     s.close()
 
 
-def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
-    """--only-notify 要从 run_meta.json 读回失败仓库并写进日报。"""
+def test_only_notify_reports_failures_from_fetch_window(tiny_repo, monkeypatch):
+    """真实缺采仍提醒，已排除的旧失败及元数据中的过期状态不冒泡。"""
     cfg = mk_cfg(tiny_repo, no_fetch=True, daily=True, notify=True)
     m = _patch_network(monkeypatch, [mk_repo()], cfg)
     _seed_baseline(m, cfg)
@@ -956,12 +950,15 @@ def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
                            "https://x/pull/42", "alice",
                            "2026-08-12T00:00:00+00:00", "open")], run)
     s.finish_run(run, repos_processed=1)
+    s.record_failures(run, {"abacus-develop": "Connection was reset",
+                            "lammps": "Connection was reset"})
     s.close()
 
     meta_path = Path(cfg.out_dir) / "run_meta.json"
     import json as _json
     meta = _json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["failures"] = {"abacus-develop": "Connection was reset"}
+    meta["failures"] = {"stale-repo": "Connection was reset"}
+    meta["succeeded"] = ["abacus-develop"]
     meta_path.write_text(_json.dumps(meta, ensure_ascii=False),
                          encoding="utf-8")
 
@@ -976,8 +973,17 @@ def test_only_notify_reports_failed_repos_from_meta(tiny_repo, monkeypatch):
     m.run(cfg2, token="fake")
 
     body = sent[0]["card"]["elements"][0]["text"]["content"]
-    assert "abacus-develop" in body, "拆分模式必须点名失败仓库"
+    assert "abacus-develop" in body, "拆分模式必须点名窗口内真实失败仓库"
     assert "明天" in body, "要说明增量会补在明天"
+    assert "lammps" not in body
+    assert "stale-repo" not in body
+    s = EventStore(cfg.events_db)
+    try:
+        for table in ("repo_failures", "repo_successes"):
+            row = s.conn.execute(f"SELECT 1 FROM {table} WHERE run_id > ?", (run,)).fetchone()
+            assert row is None, f"推送不应向 {table} 添加采集记录"
+    finally:
+        s.close()
 
 
 def test_only_notify_survives_missing_meta(tiny_repo, monkeypatch):
