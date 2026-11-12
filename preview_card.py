@@ -85,82 +85,88 @@ def md_to_html(s: str) -> str:
     return s.replace("\n", "<br>")
 
 
-TEMPLATE = """<title>飞书卡片预览 · DeepModeling 社区日报</title>
+def _elements_to_html(elements: list[dict]) -> str:
+    blocks = []
+    for element in elements:
+        tag = element["tag"]
+        if tag == "hr":
+            blocks.append("<hr>")
+        elif tag == "column_set":
+            css = "footer" if element.get("background_style") else "story"
+            columns = "".join(_elements_to_html(col["elements"]) for col in element["columns"])
+            blocks.append(f'<section class="{css}">{columns}</section>')
+        elif tag in ("div", "markdown"):
+            data = element["text"] if tag == "div" else element
+            content = data["content"]
+            body = html.escape(content) if data.get("tag") == "plain_text" else md_to_html(content)
+            css = "notation" if data.get("text_size") == "notation" else ""
+            blocks.append(f'<div class="{css}">{body}</div>')
+    return "".join(blocks)
+
+
+TEMPLATE = """<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepModeling 社区日报预览</title>
 <style>
 :root{{
-  --ground:#f2f3f5; --surface:#ffffff; --ink:#1f2329; --muted:#8f959e;
-  --line:#dee0e3; --brand:#3370ff; --panel:#ffffff; --shadow:rgba(31,35,41,.12);
+  color-scheme:light dark;
+  --ground:#f2f3f5; --surface:#fff; --ink:#1f2329; --muted:#646a73;
+  --line:#dee0e3; --link:#1456f0; --header:#eef3ff; --title:#244bb0;
+  --footer:#f5f6f7;
 }}
 @media (prefers-color-scheme:dark){{
-  :root:not([data-theme="light"]){{
-    --ground:#14161a; --surface:#1f2329; --ink:#e7e9eb; --muted:#8f959e;
-    --line:#2f343a; --brand:#4e83fd; --panel:#1a1d21; --shadow:rgba(0,0,0,.5);
+  :root{{
+    --ground:#161719; --surface:#222326; --ink:#ebebeb; --muted:#a6a6a6;
+    --line:#434343; --link:#75a4ff; --header:#152340; --title:#c2d4ff;
+    --footer:#292929;
   }}
-}}
-:root[data-theme="dark"]{{
-  --ground:#14161a; --surface:#1f2329; --ink:#e7e9eb; --muted:#8f959e;
-  --line:#2f343a; --brand:#4e83fd; --panel:#1a1d21; --shadow:rgba(0,0,0,.5);
 }}
 *{{box-sizing:border-box}}
 body{{
-  margin:0; padding:32px 24px 56px; background:var(--ground); color:var(--ink);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
-  display:flex; flex-direction:column; align-items:center; gap:20px;
-}}
-.eyebrow{{
-  width:100%; max-width:560px; font-size:12px; letter-spacing:.08em;
-  text-transform:uppercase; color:var(--muted);
+  margin:0; padding:24px 12px; background:var(--ground); color:var(--ink);
+  font-family:system-ui,"Microsoft YaHei",sans-serif;
 }}
 .card{{
-  width:100%; max-width:560px; background:var(--surface); border-radius:8px;
-  overflow:hidden; box-shadow:0 2px 14px var(--shadow);
+  max-width:600px; margin:0 auto; background:var(--surface);
+  border:1px solid var(--line); border-radius:10px; overflow:hidden;
 }}
-.hd{{
-  background:var(--brand); color:#fff; padding:12px 16px;
-  font-size:15px; font-weight:600;
-}}
-.bd{{padding:14px 16px; font-size:14px; line-height:1.75; overflow-wrap:anywhere}}
-.bd a{{color:var(--brand); text-decoration:none}}
-.bd a:hover{{text-decoration:underline}}
-.bd a:focus-visible{{outline:2px solid var(--brand); outline-offset:2px}}
-.au{{color:var(--muted)}}
-.notes{{
-  width:100%; max-width:560px; background:var(--panel); border:1px solid var(--line);
-  border-radius:8px; padding:14px 16px; font-size:13px; line-height:1.7;
-}}
-.notes h2{{margin:0 0 8px; font-size:12px; letter-spacing:.08em;
-  text-transform:uppercase; color:var(--muted); font-weight:600}}
-.notes ul{{margin:0; padding-left:18px}}
-.notes li{{margin:3px 0}}
-.notes code{{
-  background:var(--ground); border:1px solid var(--line); border-radius:3px;
-  padding:0 4px; font-size:12px;
-}}
-.meta{{
-  width:100%; max-width:560px; font-size:12px; color:var(--muted);
-  font-variant-numeric:tabular-nums;
-}}
+.hd{{background:var(--header); color:var(--title); padding:12px 16px}}
+h1{{font-size:18px; line-height:1.4; margin:0}}
+.date{{font-size:13px; margin-top:3px}}
+.bd{{padding:12px 16px; display:grid; gap:8px; font-size:14px; line-height:1.55; overflow-wrap:anywhere}}
+.story,.footer{{display:grid; gap:4px}}
+.footer{{background:var(--footer); padding:8px 12px}}
+hr{{width:100%; margin:2px 0 0; border:0; border-top:1px solid var(--line)}}
+.notation{{font-size:12px; color:var(--muted)}}
+a{{color:var(--link); text-underline-offset:2px}}
+.meta{{max-width:600px; margin:12px auto 0; color:var(--muted); font-size:12px}}
 </style>
-<p class="eyebrow">飞书卡片渲染预览</p>
-<div class="card"><div class="hd">{title}</div><div class="bd">{body}</div></div>
-<div class="notes">
-  <h2>这次改动要看的三处</h2>
-  <ul>
-    <li>每条标题末尾的 <code>@提交者</code>，取原始 login，不做身份归并</li>
-    <li>issue #5950 若作者取不到会整个省略后缀，此处 API 有值故照常显示</li>
-    <li>底部四项累计，数字取自 <code>summary.csv</code> 已有列，不额外发 API 请求</li>
-  </ul>
-</div>
-<p class="meta">卡片 {size} 字节 / 上限 18432 · 数据来自 08-10 缓存，非实时 · 实际样式以飞书客户端为准</p>"""
+<article class="card">
+  <header class="hd"><h1>{title}</h1><div class="date">{subtitle}</div></header>
+  <div class="bd">{body}</div>
+</article>
+<p class="meta">{note}</p>
+</html>
+"""
+
+
+def render_preview(payload: dict, note: str) -> str:
+    report = payload["card"]
+    header = report["header"]
+    return TEMPLATE.format(
+        title=html.escape(header["title"]["content"]),
+        subtitle=html.escape(header.get("subtitle", {}).get("content", "")),
+        body=_elements_to_html(report["body"]["elements"]),
+        note=html.escape(note),
+    )
 
 
 def main():
     payload = card.render(build_digest())
     size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-    out = TEMPLATE.format(
-        title=html.escape(payload["card"]["header"]["title"]["content"]),
-        body=md_to_html(payload["card"]["elements"][0]["text"]["content"]),
-        size=size)
+    out = render_preview(payload, f"卡片 {size} 字节，数据来自 08-10 缓存。实际样式以飞书客户端为准。")
     with open("preview_card.html", "w", encoding="utf-8") as fh:
         fh.write(out)
     print(f"已生成 preview_card.html（{size} 字节）")

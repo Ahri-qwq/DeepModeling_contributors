@@ -40,3 +40,18 @@ def isolate_real_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(_config.Config.__init__, "__defaults__",
                         tuple(defaults))
     yield
+
+
+def daily_card_text(payload):
+    """提取新版日报中的所有可见正文，供推送流程测试检查文案。"""
+    def lines(elements):
+        for element in elements:
+            if element["tag"] == "column_set":
+                for column in element["columns"]:
+                    yield from lines(column["elements"])
+            elif element["tag"] == "div":
+                yield element["text"]["content"]
+            elif element["tag"] == "markdown":
+                yield element["content"]
+
+    return "\n".join(lines(payload["card"]["body"]["elements"]))

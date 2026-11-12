@@ -8,6 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from conftest import daily_card_text
+
 from contributors.events import Event, StateChange
 from contributors.notify import card, feishu, period
 from contributors.notify.digest import MAX_ITEMS, Digest, build, to_cst_text
@@ -371,7 +373,7 @@ class TestRenderCard:
     def test_normal_content_is_not_degraded(self):
         prs = [_pr(n, "merged") for n in range(1, 26)]
         c = card.render(build(UpsertResult(prs, [])))
-        assert f"还有 {25 - MAX_ITEMS} 条" in c["card"]["elements"][0]["text"]["content"]
+        assert f"还有 {25 - MAX_ITEMS} 条" in daily_card_text(c)
 
 
 class TestSign:
@@ -551,7 +553,7 @@ class TestFailedRepos:
 
     def test_no_line_when_nothing_failed(self):
         d = build(UpsertResult([_commit("a")], []), failed_repos=[])
-        assert "未能抓取" not in card.render_text(d)
+        assert "数据待补" not in card.render_text(d)
 
     def test_many_failures_are_truncated(self):
         """失败很多时不该刷屏。"""
@@ -562,21 +564,17 @@ class TestFailedRepos:
 
 
 class TestFailedReposCarryOver:
-    """失败仓库的文案要声明会累计到明天。
+    """数据补采入库后由覆盖该时刻的日报纳入。"""
 
-    这句是真的：增量按 first_seen_run > 上次成功推送的 run 判定，
-    今天没抓到的仓库，明天抓到时那些事件才首次入库，自然进明天的日报。
-    """
-
-    def test_states_carry_over_to_tomorrow(self):
+    def test_states_carry_over_after_recovery(self):
         d = build(UpsertResult([_commit("a")], []),
                   failed_repos=["abacus-develop"])
         text = card.render_text(d)
-        assert "明天" in text and "abacus-develop" in text
+        assert "补采后纳入后续日报" in text and "abacus-develop" in text
 
     def test_no_carry_over_note_when_nothing_failed(self):
         d = build(UpsertResult([_commit("a")], []), failed_repos=[])
-        assert "明天" not in card.render_text(d)
+        assert "补采后纳入后续日报" not in card.render_text(d)
 
 
 class TestPeriodBoundaries:
@@ -817,7 +815,7 @@ class TestRecentActivity:
 class TestChronicFailures:
     """连续多次失败的仓库要单独告警。
 
-    与"未能抓取"分行的理由：那条说的是"今天没抓到、明天会补"，
+    与"数据待补"分行的理由：那条说的是"今天没抓到、明天会补"，
     对连挂三天的仓库不再成立 —— 改名、删除或权限变更永远不会自愈。
     """
 
@@ -885,12 +883,12 @@ class TestChronicFailureReasons:
         assert "改名" in text or "删除" in text or "权限" in text
 
     def test_chronic_repo_not_duplicated_in_failed_line(self):
-        """达阈值的仓库只出现在告警行，不在"未能抓取"里重复。"""
+        """达阈值的仓库只出现在告警行，不在"数据待补"里重复。"""
         d = build(UpsertResult([_commit("a")], []),
                   failed_repos=["abacus-develop", "deepmd-kit"],
                   chronic_failures={"abacus-develop": 3})
         text = card.render_text(d)
-        failed_line = [l for l in text.split("\n") if l.startswith("未能抓取")]
+        failed_line = [l for l in text.split("\n") if "数据待补：" in l]
         assert failed_line and "abacus-develop" not in failed_line[0]
         assert "deepmd-kit" in failed_line[0]
 
@@ -943,26 +941,26 @@ class TestScopeVsFailure:
         assert "今年至今（10/34 个仓库）" in card.render_text(d)
 
 
-class TestTitleAnnouncesFailure:
-    """标题要点一句数据缺失 —— 群里很多人只扫标题，不点开正文。"""
-
-    def test_title_mentions_missing_repos(self):
-        d = build(UpsertResult([_commit("a")], []),
-                  failed_repos=["abacus-develop", "deepmd-kit"])
-        title = card.render(d)["card"]["header"]["title"]["content"]
-        assert "2 个仓库今日数据缺失" in title
-
-    def test_title_counts_chronic_too(self):
+class TestDailyFooter:
+    def test_warns_in_footer_and_keeps_title_clear(self):
         d = build(UpsertResult([_commit("a")], []),
                   failed_repos=["deepmd-kit"],
                   chronic_failures={"abacus-develop": 3})
-        title = card.render(d)["card"]["header"]["title"]["content"]
-        assert "2 个仓库今日数据缺失" in title
-
-    def test_clean_run_title_unchanged(self):
-        d = build(UpsertResult([_commit("a")], []), failed_repos=[])
-        title = card.render(d)["card"]["header"]["title"]["content"]
-        assert "缺失" not in title and "DeepModeling 社区日报" in title
+        payload = card.render(d)["card"]
+        assert payload["header"]["title"]["content"] == "DeepModeling 社区日报"
+        assert "数据待补" not in payload["header"]["subtitle"]["content"]
+        elements = payload["body"]["elements"]
+        assert "数据待补" not in elements[0]["content"]
+        assert elements[-2]["tag"] == "hr"
+        footer = elements[-1]["columns"][0]["elements"]
+        stat = footer[0]["text"]
+        failed, chronic = (item["text"] for item in footer[-2:])
+        assert failed["content"].startswith("数据待补：deepmd-kit")
+        assert chronic["content"].startswith("连续抓取失败：abacus-develop")
+        for notice in (failed, chronic):
+            assert (notice["tag"], notice["text_size"], notice["text_color"]) == (
+                stat["tag"], stat["text_size"], stat["text_color"]
+            )
 
 
 class TestDailyWindowAnchoring:

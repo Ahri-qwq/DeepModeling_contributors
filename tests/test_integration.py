@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import daily_card_text
+
 from contributors.cache import CacheManager
 from contributors.config import Config, DEFAULT_EXCLUDE_PATHS
 from contributors.git_stats import collect_git_stats
@@ -815,7 +817,7 @@ def test_only_notify_pushes_without_running_pipeline(tiny_repo, monkeypatch):
 
     assert code == 0
     assert len(sent) == 1, "应推送一条"
-    body = sent[0]["card"]["elements"][0]["text"]["content"]
+    body = daily_card_text(sent[0])
     assert "#42" in body, "新增的 PR 必须出现在战报里"
 
 
@@ -972,9 +974,9 @@ def test_only_notify_reports_failures_from_fetch_window(tiny_repo, monkeypatch):
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
     m.run(cfg2, token="fake")
 
-    body = sent[0]["card"]["elements"][0]["text"]["content"]
+    body = daily_card_text(sent[0])
     assert "abacus-develop" in body, "拆分模式必须点名窗口内真实失败仓库"
-    assert "明天" in body, "要说明增量会补在明天"
+    assert "补采后纳入后续日报" in body
     assert "lammps" not in body
     assert "stale-repo" not in body
     s = EventStore(cfg.events_db)
@@ -1143,7 +1145,7 @@ def test_chronic_failure_warned_after_threshold(tiny_repo, monkeypatch):
                       date=_current_window_date_cst())
         m.run(cfg2, token="fake")
 
-    body = sent[-1]["card"]["elements"][0]["text"]["content"]
+    body = daily_card_text(sent[-1])
     assert "连续抓取失败" in body
 
 
@@ -1161,8 +1163,8 @@ def test_report_date_drives_title(tiny_repo, monkeypatch):
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
     m.run(cfg2, token="fake")
 
-    title = sent[0]["card"]["header"]["title"]["content"]
-    assert "2026-08-14" in title
+    subtitle = sent[0]["card"]["header"]["subtitle"]["content"]
+    assert subtitle == "2026-08-14（周五）"
 
 
 def test_same_date_pushed_twice_is_identical(tiny_repo, monkeypatch):
@@ -1193,6 +1195,6 @@ def test_same_date_pushed_twice_is_identical(tiny_repo, monkeypatch):
         m.run(cfg2, token="fake")
 
     assert len(sent) == 2
-    first = sent[0]["card"]["elements"][0]["text"]["content"]
-    second = sent[1]["card"]["elements"][0]["text"]["content"]
+    first = daily_card_text(sent[0])
+    second = daily_card_text(sent[1])
     assert first == second, "同一天重复推送的内容必须一致"

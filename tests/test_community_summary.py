@@ -7,6 +7,8 @@ import pytest
 import requests
 import responses
 
+from conftest import daily_card_text
+
 from contributors.events import Event, StateChange
 from contributors.main import _record_and_notify
 from contributors.notify import card, community, digest
@@ -64,11 +66,12 @@ def test_public_resource_reaches_editor_when_shortlist_misses_it(monkeypatch):
     assert stories[0]["topic"] == "papers/deepmd-kit/2025"
     assert stories[0]["people"] == [{"login": "Ahri-qwq", "role": "提交改动"}]
     d = digest.build(UpsertResult([_pr("blog", 378, "title")], []))
-    output = card.render_community(d, stories, "2026-11-10")["card"]
-    assert output["header"]["title"]["content"].endswith("2026-11-10")
-    body = output["elements"][0]["text"]["content"]
+    payload = card.render_community(d, stories, "2026-11-12")
+    assert payload["card"]["header"]["subtitle"]["content"] == "2026-11-12（周四）"
+    body = daily_card_text(payload)
     assert body.startswith("**官网 Papers｜官网拟补录 53 篇论文**")
-    assert "有修改提案" in body and "github.com/Ahri-qwq" in body
+    assert "有修改提案：[@Ahri-qwq](https://github.com/Ahri-qwq)" in body
+    assert "来源：[blog#378](https://github.com/deepmodeling/blog/pull/378)" in body
 
 
 def test_papers_parser_counts_unique_entries_in_year():
@@ -80,13 +83,17 @@ def test_community_card_shows_both_links_below_activity(monkeypatch):
     monkeypatch.setenv("DASHBOARD_URL", "https://example.com/dashboard")
     monkeypatch.setenv("FEISHU_BITABLE_VIEW_URL", "https://example.com/contributors")
     d = digest.build(UpsertResult([_pr("deepmd-kit", 1, "改动")], []))
-    output = card.render_community(d, [], "2026-11-10", status="activity")
-    lines = output["card"]["elements"][0]["text"]["content"].splitlines()
-    assert "1 项新提案" in lines[-3]
-    assert lines[-2:] == [
-        "[📊 详细条目和看板](https://example.com/dashboard)",
-        "[📋 近一年明细表格](https://example.com/contributors)",
-    ]
+    output = card.render_community(d, [], "2026-11-10")
+    elements = output["card"]["body"]["elements"]
+    assert output["card"]["schema"] == "2.0"
+    assert elements[-2]["tag"] == "hr"
+    assert elements[-1]["background_style"] == "grey-50"
+    stat, dashboard, bitable = elements[-1]["columns"][0]["elements"]
+    assert stat["text"]["content"] == "1 个 PR 新建"
+    assert stat["text"]["text_size"] == "notation"
+    assert stat["text"]["text_color"] == "grey"
+    assert dashboard["content"] == "[📊 详细条目和看板](https://example.com/dashboard)"
+    assert bitable["content"] == "[📋 近一年明细表格](https://example.com/contributors)"
 
 
 def test_proposal_cannot_be_rendered_as_merged():
@@ -306,17 +313,17 @@ def test_verified_routine_updates_use_quiet_card_without_a_model(tmp_path, monke
         store.init_schema()
         assert community.daily_summary(store, pending, "deepmodeling", START, END) == ([], None)
     payload = card.render_community(digest.build(pending), [], "2026-11-10")
-    assert "本期只有例行更新" in payload["card"]["elements"][0]["text"]["content"]
+    assert "本期只有例行更新" in daily_card_text(payload)
 
 
 def test_no_data_and_partial_coverage_get_distinct_wording():
     pending = UpsertResult([], [])
     full = digest.build(pending, recent_label="本周至今", recent_counts={"commits": 12})
     partial = digest.build(pending, failed_repos=["deepmd-kit"])
-    full_text = card.render_community(full, [], "2026-11-10")["card"]["elements"][0]["text"]["content"]
-    partial_text = card.render_community(partial, [], "2026-11-10")["card"]["elements"][0]["text"]["content"]
+    full_text = daily_card_text(card.render_community(full, [], "2026-11-10"))
+    partial_text = daily_card_text(card.render_community(partial, [], "2026-11-10"))
     assert "本期未采集到新增社区活动" in full_text and "本周至今：12 次提交" in full_text
-    assert "部分仓库数据待补" in partial_text and "deepmd-kit" in partial_text
+    assert "数据待补" in partial_text and "deepmd-kit" in partial_text
     assert "本期未采集到新增社区活动" not in partial_text
 
 
@@ -348,8 +355,9 @@ def test_push_pipeline_uses_short_card_when_summary_has_no_story(tmp_path, monke
     _record_and_notify([], {"window": {"since": "", "until": ""}}, cfg, 0, [])
     output = capsys.readouterr().out
     payload = json.loads(output[output.index('{\n  "msg_type"'):])
-    body = payload["card"]["elements"][0]["text"]["content"]
-    assert payload["card"]["header"]["title"]["content"] == "DeepModeling 社区日报 2026-11-13"
+    body = daily_card_text(payload)
+    assert payload["card"]["header"]["title"]["content"] == "DeepModeling 社区日报"
+    assert payload["card"]["header"]["subtitle"]["content"] == "2026-11-13（周五）"
     assert "2 项新提案" in body
     assert "改进教程入口" not in body and "修复下载步骤" not in body
 
@@ -368,8 +376,8 @@ def test_push_pipeline_reports_missing_coverage_without_recent_activity(tmp_path
     _record_and_notify([], {"window": {"since": "", "until": ""}}, cfg, 0, [])
     output = capsys.readouterr().out
     payload = json.loads(output[output.index('{\n  "msg_type"'):])
-    body = payload["card"]["elements"][0]["text"]["content"]
-    assert "部分仓库数据待补" in body and "deepmd-kit" in body
+    body = daily_card_text(payload)
+    assert "数据待补" in body and "deepmd-kit" in body
 
 
 def test_summary_falls_back_and_reuses_success(tmp_path, monkeypatch):

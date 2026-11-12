@@ -7,6 +7,7 @@ import json
 import os
 import re
 import unicodedata
+from datetime import date
 from html import unescape
 
 from .classify import group_by_category
@@ -162,19 +163,13 @@ MAX_FAILED = 5
 
 
 def _failed_line(d: Digest) -> str:
-    """未能抓取的仓库。数据不全时必须让读日报的人看见。
-
-    "累计到明天"不是安慰话：增量按 first_seen_run > 上次成功推送的 run
-    判定，今天没抓到的仓库，明天抓到时那些事件才首次入库，自然会进
-    明天的日报，不会丢。
-    """
+    """把本期待补采的仓库列在页脚。"""
     if not d.failed_repos:
         return ""
     shown = [_escape(r) for r in d.failed_repos[:MAX_FAILED]]
     rest = len(d.failed_repos) - len(shown)
     tail = f"，还有 {rest} 个" if rest > 0 else ""
-    return (f"未能抓取：{'、'.join(shown)}{tail}"
-            "（其增量将累计到明天的日报）")
+    return f"数据待补：{'、'.join(shown)}{tail}（补采后纳入后续日报）"
 
 
 def _chronic_line(d: Digest) -> str:
@@ -209,7 +204,7 @@ def _chronic_line(d: Digest) -> str:
         if cat in groups:
             parts.append(f"{'、'.join(groups[cat])}，{hint}")
     # tail 统一挂末尾：分成多组时挂在某一组后面会读成只有那组还有更多
-    return "⚠️ 连续抓取失败：" + "；".join(parts) + tail
+    return "连续抓取失败：" + "；".join(parts) + tail
 
 
 def _recent_line(d: Digest) -> str:
@@ -234,30 +229,16 @@ def _recent_line(d: Digest) -> str:
     return f"{d.recent_label}：{' · '.join(parts)}"
 
 
-def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
-    """卡片正文的 markdown。"""
-    no_increment = not (d.commit_count or d.merged_prs
-                        or d.opened_prs or d.issues)
-    if no_increment:
-        # 无更新也要发：不发的话群里第一反应是脚本挂了
-        lines = [_headline(d), "本期无更新"]
-        lines.extend(report_links())
-        lines += ["", _recent_line(d)]
-        totals = _totals_line(d)
-        if totals:
-            lines.append("")
-            lines.append(totals)
-        failed = _failed_line(d)
-        if failed:
-            lines.append(failed)
-        chronic = _chronic_line(d)
-        if chronic:
-            lines.append(chronic)
-        return "\n".join(lines)
-
-    lines = [_headline(d), _summary_line(d)]
-
-    lines.extend(report_links())
+def render_text(d: Digest, limit: int = MAX_ITEMS, *, include_footer: bool = True) -> str:
+    """渲染原始条目明细。独立文本预览保留统计和链接。"""
+    lines = [_headline(d)]
+    if not (d.commit_count or d.merged_prs or d.opened_prs or d.issues):
+        lines.append("本期无更新")
+        if include_footer:
+            lines.extend(report_links())
+        lines.extend(["", _recent_line(d)])
+    elif include_footer:
+        lines.extend([_summary_line(d), *report_links()])
 
     # PR 按「在干什么」分区，而不是按合并/新建。读日报的是运营，
     # 他们要的是「社区最近在推新功能还是在修 bug」，不是 PR 的生命周期状态。
@@ -285,34 +266,11 @@ def render_text(d: Digest, limit: int = MAX_ITEMS) -> str:
             lines.append("")
             lines.extend(sec)
 
-    totals = _totals_line(d)
-    if totals:
-        lines.append("")
-        lines.append(totals)
-
-    failed = _failed_line(d)
-    if failed:
-        lines.append(failed)
-
-    chronic = _chronic_line(d)
-    if chronic:
-        lines.append(chronic)
-
+    if include_footer:
+        if totals := _totals_line(d):
+            lines.extend(["", totals])
+        lines.extend(line for line in (_failed_line(d), _chronic_line(d)) if line)
     return "\n".join(lines)
-
-
-def _title(d: Digest, report_date: str = "") -> str:
-    """卡片标题。有仓库没抓到时在标题里点一句。
-
-    正文已经有"未能抓取"那行，标题再说一次是因为：群里很多人只扫标题，
-    正文折叠着不点开。标题只说"部分仓库数据缺失"这个事实，不列名字 ——
-    缺哪几个、会怎么补，正文讲得清楚，标题挤不下也不该挤。
-    """
-    base = f"DeepModeling 社区日报 {report_date or d.generated_at}"
-    if d.failed_repos or d.chronic_failures:
-        n = len(d.failed_repos) + len(d.chronic_failures)
-        return f"{base}（{n} 个仓库今日数据缺失）"
-    return base
 
 
 def _payload(title: str, text: str) -> dict:
@@ -332,24 +290,35 @@ def _payload(title: str, text: str) -> dict:
     }
 
 
-def community_story_lines(stories: list) -> list | None:
-    def story_text(value):
-        return _escape(value).replace("*", "\\*")
+def _story_copy(story: dict) -> tuple[str, str] | None:
+    title, text = story["title"], story["text"]
+    if not is_plain_story_text(title) or not is_plain_story_text(text):
+        return None
+    repo = story["repo"]
+    name = "官网 Papers" if story.get("topic", "").startswith("papers/") else PROJECT_NAMES.get(repo.casefold(), repo)
+    name, title, text = (_escape(value).replace("*", "\\*") for value in (name, title, text))
+    return f"**{name}｜{title}**", text
 
+
+def _story_people(story: dict) -> list[str]:
+    return [f"[@{person['login']}](https://github.com/{person['login']}) {person['role']}"
+            for person in story["people"]]
+
+
+def _story_sources(story: dict) -> list[str]:
+    return [f"[{_escape(source['label'])}]({source['url']})" for source in story["sources"]]
+
+
+def community_story_lines(stories: list) -> list | None:
     lines = []
     for story in stories:
-        if not is_plain_story_text(story["title"]) or not is_plain_story_text(story["text"]):
+        copy = _story_copy(story)
+        if copy is None:
             return None
         if lines:
             lines.append("")
-        repo = story["repo"]
-        name = "官网 Papers" if story.get("topic", "").startswith("papers/") else PROJECT_NAMES.get(repo.casefold(), repo)
-        lines.append(f"**{story_text(name)}｜{story_text(story['title'])}**")
-        lines.append(story_text(story["text"]))
-        context = [story["stage"]]
-        context.extend(f"[@{person['login']}](https://github.com/{person['login']}) {person['role']}" for person in story["people"])
-        context.extend(f"[{_escape(source['label'])}]({source['url']})" for source in story["sources"])
-        lines.append(" · ".join(context))
+        lines.extend(copy)
+        lines.append(" · ".join([story["stage"], *_story_people(story), *_story_sources(story)]))
     return lines
 
 
@@ -363,48 +332,94 @@ def report_links() -> list[str]:
     return links
 
 
+def _markdown(content: str, size: str = "normal") -> dict:
+    return {"tag": "markdown", "content": content, "text_size": size}
+
+
+def _daily_column(elements: list[dict], *, footer: bool = False) -> dict:
+    group = {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [{"tag": "column", "width": "weighted", "weight": 1,
+                     "vertical_spacing": "4px", "elements": elements}],
+    }
+    if footer:
+        group["background_style"] = "grey-50"
+        group["columns"][0]["padding"] = "8px 12px"
+    return group
+
+
+def _footer_text(content: str) -> dict:
+    return {"tag": "div", "text": {"tag": "plain_text", "content": content,
+                                  "text_size": "notation", "text_color": "grey"}}
+
+
+def _daily_payload(d: Digest, elements: list[dict], report_date: str, stats: list[str]) -> dict:
+    header = {"title": {"tag": "plain_text", "content": "DeepModeling 社区日报"}, "template": "blue"}
+    if report_date:
+        day = date.fromisoformat(report_date)
+        weekday = "一二三四五六日"[day.weekday()]
+        header["subtitle"] = {"tag": "plain_text", "content": f"{report_date}（周{weekday}）"}
+
+    footer = [_footer_text(stat) for stat in stats if stat]
+    footer.extend(_markdown(link) for link in report_links())
+    footer.extend(_footer_text(line) for line in (_failed_line(d), _chronic_line(d)) if line)
+    if footer:
+        elements = [*elements, {"tag": "hr"}, _daily_column(footer, footer=True)]
+    return {"msg_type": "interactive", "card": {
+        "schema": "2.0",
+        "header": header,
+        "body": {"elements": elements},
+    }}
+
+
 def render_community(d: Digest, stories: list, report_date: str, *, status="quiet") -> dict | None:
     """Render a daily summary or its compact status card."""
-    lines = community_story_lines(stories)
-    if lines is None:
-        return None
+    elements = []
+    for story in stories:
+        copy = _story_copy(story)
+        if copy is None:
+            return None
+        title, text = copy
+        info = story["stage"]
+        if people := _story_people(story):
+            info += "：" + " / ".join(people)
+        section = [_markdown(title), _markdown(text), _markdown(info, "notation")]
+        if sources := _story_sources(story):
+            section.append(_markdown("来源：" + "、".join(sources), "notation"))
+        elements.append(_daily_column(section))
+
     activity = bool(d.commit_count or d.merged_prs or d.opened_prs or d.issues)
     incomplete = bool(d.failed_repos or d.chronic_failures)
-    short = not stories or any(story.get("verified_fallback") for story in stories)
-    if short and incomplete:
-        lines.insert(0, "部分仓库数据待补。")
+    stats = []
+    if activity and (stories or status == "quiet"):
+        stats.append(_summary_line(d))
     if not stories:
-        if activity:
-            if status == "quiet":
-                lines.append("已采集的活动只有例行更新。" if incomplete else "本期只有例行更新。")
-            else:
-                counts = ((d.opened_count, "项新提案"), (d.merged_count, "项已合并改动"),
-                          (d.issue_count, "条问题或建议"), (d.commit_count, "次代码提交"))
-                overview = "、".join(f"{count} {label}" for count, label in counts if count)
-                lines.append(f"{'已覆盖范围内' if incomplete else '本期'}记录到 {overview}。")
-                if status == "unavailable":
-                    lines.append("摘要暂未生成。")
-        else:
-            lines.append("已采集的仓库在本期暂无新增记录。" if incomplete else "本期未采集到新增社区活动。")
+        if not activity:
+            elements.append(_markdown("已采集的仓库在本期暂无新增记录。" if incomplete else "本期未采集到新增社区活动。"))
             if d.recent_counts:
-                lines.append(_recent_line(d))
-    if activity and not short:
-        lines.extend(["", _summary_line(d)])
-    lines.extend(report_links())
-    lines.extend(line for line in (_failed_line(d), _chronic_line(d)) if line)
-    payload = _payload(_title(d, report_date), "\n".join(lines))
+                stats.append(_recent_line(d))
+        elif status == "quiet":
+            elements.append(_markdown("已采集的活动只有例行更新。" if incomplete else "本期只有例行更新。"))
+        else:
+            counts = ((d.opened_count, "项新提案"), (d.merged_count, "项已合并改动"),
+                      (d.issue_count, "条问题或建议"), (d.commit_count, "次代码提交"))
+            overview = "、".join(f"{count} {label}" for count, label in counts if count)
+            elements.append(_markdown(f"{'已覆盖范围内' if incomplete else '本期'}记录到 {overview}。"))
+            if status == "unavailable":
+                elements.append(_markdown("摘要暂未生成。"))
+
+    payload = _daily_payload(d, elements, report_date, stats)
     return payload if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT else None
 
 
 def render(d: Digest) -> dict:
-    """渲染卡片，超过体积上限时逐级降级。
-
-    降级顺序是先减条数而非砍标题：少列几条 PR 仍然可读，而标题被砍
-    到半截会让人看不懂在说什么。真到了 1 条还超限（几乎不可能，除非
-    单条标题极长），至少消息本身还发得出去。
-    """
+    """没有动向摘要时渲染条目明细，超限时逐级减少明细。"""
+    stats = [_summary_line(d), _totals_line(d)]
     for limit in (MAX_ITEMS, 3, 1):
-        card = _payload(_title(d), render_text(d, limit))
-        if len(json.dumps(card, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT:
-            return card
-    return card
+        body = render_text(d, limit, include_footer=False)
+        payload = _daily_payload(d, [_markdown(body)], d.generated_at, stats)
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT:
+            return payload
+    return _daily_payload(d, [_markdown("本期活动已记录，可通过页脚查看明细。")],
+                          d.generated_at, stats)
