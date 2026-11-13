@@ -94,7 +94,7 @@ def test_papers_share_one_section_and_primary_authors_do_not_depend_on_model(mon
         return row
 
     def model(*args, thinking, deadline, validate):
-        assert args[3]["max_items"] == 6
+        assert args[3]["max_items"] == 5
         assert args[3]["current_source_ids"] == ["blog#384"]
         if model_unavailable:
             raise TimeoutError("offline")
@@ -117,10 +117,62 @@ def test_papers_share_one_section_and_primary_authors_do_not_depend_on_model(mon
     assert "uni-mol 论文清单拟净增 15 篇。" in body
     assert "**ReacNetGenerator**" not in body
     assert "来源：[blog#379]" in body
+    assert body.index("已合并与待合并：[@Ahri-qwq]") < body.index("来源：[blog#379]")
+    assert "参与：" not in body
     for number in range(379, 384):
         assert f"https://github.com/deepmodeling/blog/pull/{number}" in body
     if not model_unavailable:
         assert "有修改提案：[@writer](https://github.com/writer)" in body
+
+
+def test_daily_groups_issue_and_related_prs_but_keeps_independent_work(monkeypatch):
+    repo = "example"
+    issue = Event("issue", repo, 1, None, "Missing export output",
+                  "https://github.com/deepmodeling/example/issues/1", "reporter", "2026-11-10T01:00:00Z", "open")
+    pending = UpsertResult([
+        issue, _pr(repo, 2, "Fix export output", "author"), _pr(repo, 3, "Add export checks", "second"),
+        _pr(repo, 4, "Update documentation", "other"), _pr(repo, 5, "Add export test", "third"),
+        _pr(repo, 6, "Update export examples", "fourth"), _pr(repo, 7, "Check old exports", "fifth"),
+    ], [StateChange("pr:example:2", "pr", repo, 2, "Fix export output",
+                    "https://github.com/deepmodeling/example/pull/2", "open", "merged", "author")])
+    current = community._event_records(pending, True)
+    monkeypatch.setattr(community, "get_token", lambda: None)
+    monkeypatch.setattr(community, "_public_repos", lambda *args: {repo})
+    bodies = {1: "Missing export output", 2: "Fixes: #1", 3: "Resolves deepmodeling/example#1",
+              4: "Fixes other/example#1", 5: "Closes #1", 6: "Fixes #1", 7: "Closes #1"}
+    monkeypatch.setattr(community, "_get_json", lambda path, token: {"body": bodies[int(path.rsplit('/', 1)[-1])]})
+
+    def model(*args, thinking, deadline, validate):
+        if not thinking:
+            return validate({"candidates": [{"refs": [f"example#{n}"]} for n in (3, 2, 4)]})
+        assert set(args[3]["linked_issue_groups"]["example#1"]) == {f"example#{n}" for n in (3, 2, 5, 6, 7)}
+        assert "example#1" in args[3]["current_source_ids"]
+        return validate({"items": [{"title": current[ref]["title"], "text": "涉及导出流程。",
+                                    "refs": [ref], "stage_source": ref}
+                                   for ref in ("example#1", "example#3", "example#2", "example#4")]})
+
+    monkeypatch.setattr(community, "_model_json", model)
+    stories = community._generate(current, {}, [], "deepmodeling", datetime.fromisoformat(START),
+                                  datetime.fromisoformat(END), "key", "model")
+    assert [story["topic"] for story in stories] == ["example#1", "example#4"]
+    story = stories[0]
+    assert story["stage"] == "已合并与待合并"
+    assert [person["login"] for person in story["people"]][:3] == ["author", "reporter", "second"]
+    labels = [source["label"] for source in story["sources"]]
+    assert labels[:3] == ["example#2", "example#3", "example#1"]
+    assert set(labels[3:5]) == {"example#5", "example#6"}
+    body = daily_card_text(card.render_community(digest.build(pending), stories, "2026-11-13"))
+    assert "已合并与待合并：[@author]" in body
+    assert "等 6 人" in body and "等 6 条" in body
+    assert "example#6" in body and "example#7" not in body
+
+
+@pytest.mark.parametrize("body", ["Fixes #1 and fixes #2", "`Fixes #1`", "<!-- Fixes #1 -->", "> Fixes #1"])
+def test_ambiguous_or_example_issue_references_do_not_group(body, monkeypatch):
+    monkeypatch.setattr(community, "_get_json", lambda *args: {"body": body})
+    current = community._event_records(UpsertResult([_pr("example", 7, "Export change")], []), True)
+    evidence = community._enrich(current["example#7"], "deepmodeling", datetime.fromisoformat(END), None)
+    assert "linked_issue" not in evidence
 
 
 def test_papers_parser_counts_unique_entries_in_year():
@@ -211,16 +263,34 @@ def test_papers_appendix_preserves_other_story_order():
     assert [story["sources"][0]["label"] for story in stories] == [*refs[1:], refs[0]]
 
 
-@pytest.mark.parametrize("count", [0, 2, 4, 5, 7])
+@pytest.mark.parametrize("count", [0, 2, 4, 5, 6])
 def test_daily_story_count_can_follow_activity(count):
     records = community._event_records(UpsertResult([_pr("deepmd-kit", n, "工程更新") for n in range(1, count + 1)], []), True)
     items = [{"title": "改动提案", "text": "有新的改动。", "refs": [ref], "stage_source": ref} for ref in records]
     assert len(community._items({"items": items}, records)) == count
 
 
-def test_daily_hard_limit_rejects_eight_stories():
+def test_daily_hard_limit_rejects_seven_stories():
     with pytest.raises(ValueError, match="Invalid story count"):
-        community._items({"items": [{}] * 8}, {})
+        community._items({"items": [{}] * 7}, {})
+
+
+def test_daily_card_limits_visible_sections_and_preserves_papers_example():
+    pending = UpsertResult([_pr("example", n, "工程更新", f"author{n}") for n in range(1, 7)], [])
+    records = community._event_records(pending, True)
+    items = [{"title": f"进展 {n}", "text": "有新的改动。", "refs": [ref, *[other for other in records if other != ref][:4]],
+              "stage_source": ref} for n, ref in enumerate(records, start=1)]
+    stories = community._validated_items({"items": items}, records, max_sources=5, max_people=None)
+    papers = [{"paper_batch_member": True, "title": f"项目 {n}", "text": "", "stage": "有修改提案",
+               "resource_counts": {"net_change": n}, "people": [{"login": f"paper{n}", "role": "提交改动"}],
+               "sources": [{"label": f"blog#{n}", "url": f"https://github.com/deepmodeling/blog/pull/{n}"}]}
+              for n in range(1, 7)]
+    body = daily_card_text(card.render_community(digest.build(pending), [*stories, *papers], "2026-11-13"))
+    assert body.count("**example｜") == 5
+    assert body.count("**官网 Papers｜") == 1
+    assert "项目 6 论文清单拟净增 6 篇" in body
+    assert "来源：[blog#6]" in body and "[blog#5]" not in body
+    assert "有修改提案：[@author1]" in body and "等 5 人" in body
 
 
 def test_recurring_blog_requires_complete_dated_post_files(monkeypatch):

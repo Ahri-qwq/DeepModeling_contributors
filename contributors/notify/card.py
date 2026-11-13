@@ -16,6 +16,9 @@ from .digest import MAX_ITEMS, Digest
 # 飞书请求体上限 20 KB（官方文档）。留 2 KB 余量给签名等顶层字段，
 # 超过就逐级降级 —— 宁可少列几条，也不能整条消息发不出去。
 SIZE_LIMIT = 18 * 1024
+DAILY_MAX_STORIES = 6
+DAILY_MAX_PEOPLE = 3
+DAILY_MAX_SOURCES = 5
 LINK_IN_PROSE = re.compile(
     r"\]\s*\(|<(?:a|at)\b|(?<![a-z0-9_])(?:[a-z][a-z0-9+.-]*\s*://|https?\s*:|mailto\s*:|javascript\s*:|www\s*\.)"
     r"|(?<![a-z0-9_.-])(?:[\w-]+\.)+[^\W\d_][\w-]{1,62}(?![\w-])"
@@ -336,6 +339,19 @@ def _markdown(content: str, size: str = "normal") -> dict:
     return {"tag": "markdown", "content": content, "text_size": size}
 
 
+def _daily_story_details(stage: str, people: list[str], links: list[str], source_count: int) -> list[dict]:
+    names = " / ".join(people[:DAILY_MAX_PEOPLE])
+    if len(people) > DAILY_MAX_PEOPLE:
+        names += f" 等 {len(people)} 人"
+    info = stage + ("：" + names if names else "")
+    details = [_markdown(info, "notation")]
+    if links:
+        visible = links[:DAILY_MAX_SOURCES]
+        tail = f" 等 {source_count} 条" if source_count > len(visible) else ""
+        details.append(_markdown("来源：" + "、".join(visible) + tail, "notation"))
+    return details
+
+
 def _daily_column(elements: list[dict], *, footer: bool = False) -> dict:
     group = {
         "tag": "column_set",
@@ -374,20 +390,20 @@ def _daily_payload(d: Digest, elements: list[dict], report_date: str, stats: lis
     }}
 
 
-def _paper_example(stories: list[dict]) -> str:
+def _paper_example(stories: list[dict]) -> tuple[str, dict | None]:
     verified = [story for story in stories if (story.get("resource_counts") or {}).get("net_change", 0) > 0]
     if verified:
         story = max(verified, key=lambda item: item["resource_counts"]["net_change"])
         project = _escape(story["title"]).replace("*", "\\*")
         count = story["resource_counts"]["net_change"]
         change = "已净增" if story["stage"] == "已合并" else "拟净增"
-        return f"{project} 论文清单{change} {count} 篇。"
+        return f"{project} 论文清单{change} {count} 篇。", story
     for story in stories:
         if story["text"].startswith("PR 说明"):
             project = _escape(story["title"]).replace("*", "\\*")
             claim = _escape(story["text"].removeprefix("PR 说明"))
-            return f"据 PR 说明，{project} {claim}。"
-    return ""
+            return f"据 PR 说明，{project} {claim}。", story
+    return "", None
 
 
 def _paper_batch_elements(stories: list[dict]) -> list[dict]:
@@ -399,40 +415,42 @@ def _paper_batch_elements(stories: list[dict]) -> list[dict]:
     if proposals:
         progress.append(f"{len(proposals)} 项待合并")
     overview = f"本期推进 {len(stories)} 项论文目录补录，{'、'.join(progress)}。"
-    summary = overview + _paper_example(merged) + _paper_example(proposals)
-    elements = [_markdown("**官网 Papers｜论文目录补录进展**"), _markdown(summary)]
+    merged_text, merged_example = _paper_example(merged)
+    proposal_text, proposal_example = _paper_example(proposals)
+    summary = overview + merged_text + proposal_text
     ordered = [*merged, *proposals]
-    links = list(dict.fromkeys(link for story in ordered for link in _story_sources(story)))
-    if links:
-        tail = f"等 {len(links)} 项" if len(links) > 6 else ""
-        elements.append(_markdown("来源：" + "、".join(links[:6]) + tail, "notation"))
-    people = list(dict.fromkeys(person for story in ordered for person in _story_people(story)))
-    if people:
-        elements.append(_markdown("参与：" + " / ".join(people[:2]), "notation"))
-    return elements
+    cited = [story for story in (merged_example, proposal_example) if story is not None]
+    links = list(dict.fromkeys(link for story in [*cited, *ordered] for link in _story_sources(story)))
+    authors = {}
+    for story in [*cited, *ordered]:
+        for person in story["people"]:
+            authors.setdefault(person["login"].casefold(), person)
+    people = _story_people({"people": list(authors.values())})
+    stage = "已合并与待合并" if merged and proposals else ordered[0]["stage"]
+    return [_markdown("**官网 Papers｜论文目录补录进展**"), _markdown(summary),
+            *_daily_story_details(stage, people, links, len(links))]
 
 
 def render_community(d: Digest, stories: list, report_date: str, *, status="quiet") -> dict | None:
     """Render a daily summary or its compact status card."""
     elements = []
-    papers = []
+    papers = [story for story in stories if story.get("paper_batch_member")]
+    ordinary_limit = DAILY_MAX_STORIES - bool(papers)
     for story in stories:
         if story.get("paper_batch_member"):
-            papers.append(story)
             continue
+        if len(elements) >= ordinary_limit:
+            break
         copy = _story_copy(story)
         if copy is None:
             return None
         title, text = copy
-        info = story["stage"]
-        if people := _story_people(story):
-            info += "：" + " / ".join(people)
-        section = [_markdown(title), _markdown(text), _markdown(info, "notation")]
-        if sources := _story_sources(story):
-            section.append(_markdown("来源：" + "、".join(sources), "notation"))
+        sources = _story_sources(story)
+        details = _daily_story_details(story["stage"], _story_people(story), sources,
+                                       story.get("source_count", len(sources)))
+        section = [_markdown(title), _markdown(text), *details]
         elements.append(_daily_column(section))
-    if papers:
-        elements.append(_daily_column(_paper_batch_elements(papers)))
+    appendix = [_daily_column(_paper_batch_elements(papers))] if papers else []
 
     activity = bool(d.commit_count or d.merged_prs or d.opened_prs or d.issues)
     incomplete = bool(d.failed_repos or d.chronic_failures)
@@ -454,7 +472,7 @@ def render_community(d: Digest, stories: list, report_date: str, *, status="quie
             if status == "unavailable":
                 elements.append(_markdown("摘要暂未生成。"))
 
-    payload = _daily_payload(d, elements, report_date, stats)
+    payload = _daily_payload(d, [*elements, *appendix], report_date, stats)
     return payload if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT else None
 
 
