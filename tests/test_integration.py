@@ -1163,8 +1163,8 @@ def test_report_date_drives_title(tiny_repo, monkeypatch):
     monkeypatch.setattr(m.feishu, "load_env", lambda: None)
     m.run(cfg2, token="fake")
 
-    subtitle = sent[0]["card"]["header"]["subtitle"]["content"]
-    assert subtitle == "2026-08-14（周五）"
+    title = sent[0]["card"]["header"]["title"]["content"]
+    assert title == "DeepModeling 社区日报 · 2026-08-14（周五）"
 
 
 def test_same_date_pushed_twice_is_identical(tiny_repo, monkeypatch):

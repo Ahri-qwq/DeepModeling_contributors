@@ -134,7 +134,6 @@ body{{
 }}
 .hd{{background:var(--header); color:var(--title); padding:12px 16px}}
 h1{{font-size:18px; line-height:1.4; margin:0}}
-.date{{font-size:13px; margin-top:3px}}
 .bd{{padding:12px 16px; display:grid; gap:8px; font-size:14px; line-height:1.55; overflow-wrap:anywhere}}
 .story,.footer{{display:grid; gap:4px}}
 .footer{{background:var(--footer); padding:8px 12px}}
@@ -144,7 +143,7 @@ a{{color:var(--link); text-underline-offset:2px}}
 .meta{{max-width:600px; margin:12px auto 0; color:var(--muted); font-size:12px}}
 </style>
 <article class="card">
-  <header class="hd"><h1>{title}</h1><div class="date">{subtitle}</div></header>
+  <header class="hd"><h1>{title}</h1></header>
   <div class="bd">{body}</div>
 </article>
 <p class="meta">{note}</p>
@@ -157,7 +156,6 @@ def render_preview(payload: dict, note: str) -> str:
     header = report["header"]
     return TEMPLATE.format(
         title=html.escape(header["title"]["content"]),
-        subtitle=html.escape(header.get("subtitle", {}).get("content", "")),
         body=_elements_to_html(report["body"]["elements"]),
         note=html.escape(note),
     )

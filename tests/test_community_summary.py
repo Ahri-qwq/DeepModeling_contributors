@@ -67,11 +67,60 @@ def test_public_resource_reaches_editor_when_shortlist_misses_it(monkeypatch):
     assert stories[0]["people"] == [{"login": "Ahri-qwq", "role": "提交改动"}]
     d = digest.build(UpsertResult([_pr("blog", 378, "title")], []))
     payload = card.render_community(d, stories, "2026-11-12")
-    assert payload["card"]["header"]["subtitle"]["content"] == "2026-11-12（周四）"
+    assert payload["card"]["header"]["title"]["content"] == "DeepModeling 社区日报 · 2026-11-12（周四）"
     body = daily_card_text(payload)
     assert body.startswith("**官网 Papers｜官网拟补录 53 篇论文**")
     assert "有修改提案：[@Ahri-qwq](https://github.com/Ahri-qwq)" in body
     assert "来源：[blog#378](https://github.com/deepmodeling/blog/pull/378)" in body
+
+
+@pytest.mark.parametrize("model_unavailable", [False, True])
+def test_papers_share_one_section_and_primary_authors_do_not_depend_on_model(monkeypatch, model_unavailable):
+    pending = UpsertResult([
+        _pr("blog", 380, "papers(dpgen): 补入 25 篇论文（2025Q1, 2025Q2toQ4）"),
+        _pr("blog", 381, "papers(deepmd-kit): 补入 2026 年 76 篇论文"),
+        _pr("blog", 382, "papers(ABACUS): 补入 2025-2026 年 33 篇论文"),
+        _pr("blog", 383, "papers(uni-mol): 补入 2025-2026 年 26 篇论文"),
+        _pr("blog", 384, "发布教程", "writer"),
+    ], [StateChange("pr:blog:379", "pr", "blog", 379, "papers(ReacNetGenerator): 补入 2024-2026 年 8 篇论文",
+                     "https://github.com/deepmodeling/blog/pull/379", "open", "merged", "Ahri-qwq")])
+    records = community._event_records(pending, True)
+    monkeypatch.setattr(community, "get_token", lambda: None)
+    monkeypatch.setattr(community, "_public_repos", lambda *args: {"blog"})
+
+    def enrich(row, *args):
+        if row["id"] == "blog#383":
+            return {**row, "resource_counts": {"before": 3, "after_this_change": 18, "net_change": 15}}
+        return row
+
+    def model(*args, thinking, deadline, validate):
+        assert args[3]["max_items"] == 6
+        assert args[3]["current_source_ids"] == ["blog#384"]
+        if model_unavailable:
+            raise TimeoutError("offline")
+        if not thinking:
+            return validate({"candidates": [{"refs": ["blog#384"]}]})
+        return validate({"items": [{"title": "新增教程", "text": "提案增加了新的教程。",
+                                    "refs": ["blog#384"], "stage_source": "blog#384", "person_sources": []}]})
+
+    monkeypatch.setattr(community, "_enrich", enrich)
+    monkeypatch.setattr(community, "_model_json", model)
+    stories = community._generate(records, {}, [], "deepmodeling", datetime.fromisoformat(START),
+                                  datetime.fromisoformat(END), "key", "model")
+    payload = card.render_community(digest.build(pending), stories, "2026-11-13")
+    body = daily_card_text(payload)
+    assert body.count("**官网 Papers｜") == 1
+    assert body.count("**社区博客｜") == (0 if model_unavailable else 1)
+    assert body.count("@Ahri-qwq") == 1
+    assert "本期推进 5 项论文目录补录，1 项已合并、4 项待合并。" in body
+    assert "据 PR 说明，ReacNetGenerator 补录 8 篇。" in body
+    assert "uni-mol 论文清单拟净增 15 篇。" in body
+    assert "**ReacNetGenerator**" not in body
+    assert "来源：[blog#379]" in body
+    for number in range(379, 384):
+        assert f"https://github.com/deepmodeling/blog/pull/{number}" in body
+    if not model_unavailable:
+        assert "有修改提案：[@writer](https://github.com/writer)" in body
 
 
 def test_papers_parser_counts_unique_entries_in_year():
@@ -356,8 +405,7 @@ def test_push_pipeline_uses_short_card_when_summary_has_no_story(tmp_path, monke
     output = capsys.readouterr().out
     payload = json.loads(output[output.index('{\n  "msg_type"'):])
     body = daily_card_text(payload)
-    assert payload["card"]["header"]["title"]["content"] == "DeepModeling 社区日报"
-    assert payload["card"]["header"]["subtitle"]["content"] == "2026-11-13（周五）"
+    assert payload["card"]["header"]["title"]["content"] == "DeepModeling 社区日报 · 2026-11-13（周五）"
     assert "2 项新提案" in body
     assert "改进教程入口" not in body and "修复下载步骤" not in body
 

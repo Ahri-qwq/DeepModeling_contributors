@@ -947,8 +947,10 @@ class TestDailyFooter:
                   failed_repos=["deepmd-kit"],
                   chronic_failures={"abacus-develop": 3})
         payload = card.render(d)["card"]
-        assert payload["header"]["title"]["content"] == "DeepModeling 社区日报"
-        assert "数据待补" not in payload["header"]["subtitle"]["content"]
+        title = payload["header"]["title"]["content"]
+        assert title.startswith("DeepModeling 社区日报 · ")
+        assert "数据待补" not in title
+        assert "subtitle" not in payload["header"]
         elements = payload["body"]["elements"]
         assert "数据待补" not in elements[0]["content"]
         assert elements[-2]["tag"] == "hr"

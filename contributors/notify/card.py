@@ -355,11 +355,12 @@ def _footer_text(content: str) -> dict:
 
 
 def _daily_payload(d: Digest, elements: list[dict], report_date: str, stats: list[str]) -> dict:
-    header = {"title": {"tag": "plain_text", "content": "DeepModeling 社区日报"}, "template": "blue"}
+    title = "DeepModeling 社区日报"
     if report_date:
         day = date.fromisoformat(report_date)
         weekday = "一二三四五六日"[day.weekday()]
-        header["subtitle"] = {"tag": "plain_text", "content": f"{report_date}（周{weekday}）"}
+        title += f" · {report_date}（周{weekday}）"
+    header = {"title": {"tag": "plain_text", "content": title}, "template": "blue"}
 
     footer = [_footer_text(stat) for stat in stats if stat]
     footer.extend(_markdown(link) for link in report_links())
@@ -373,10 +374,52 @@ def _daily_payload(d: Digest, elements: list[dict], report_date: str, stats: lis
     }}
 
 
+def _paper_example(stories: list[dict]) -> str:
+    verified = [story for story in stories if (story.get("resource_counts") or {}).get("net_change", 0) > 0]
+    if verified:
+        story = max(verified, key=lambda item: item["resource_counts"]["net_change"])
+        project = _escape(story["title"]).replace("*", "\\*")
+        count = story["resource_counts"]["net_change"]
+        change = "已净增" if story["stage"] == "已合并" else "拟净增"
+        return f"{project} 论文清单{change} {count} 篇。"
+    for story in stories:
+        if story["text"].startswith("PR 说明"):
+            project = _escape(story["title"]).replace("*", "\\*")
+            claim = _escape(story["text"].removeprefix("PR 说明"))
+            return f"据 PR 说明，{project} {claim}。"
+    return ""
+
+
+def _paper_batch_elements(stories: list[dict]) -> list[dict]:
+    merged = [story for story in stories if story["stage"] == "已合并"]
+    proposals = [story for story in stories if story["stage"] != "已合并"]
+    progress = []
+    if merged:
+        progress.append(f"{len(merged)} 项已合并")
+    if proposals:
+        progress.append(f"{len(proposals)} 项待合并")
+    overview = f"本期推进 {len(stories)} 项论文目录补录，{'、'.join(progress)}。"
+    summary = overview + _paper_example(merged) + _paper_example(proposals)
+    elements = [_markdown("**官网 Papers｜论文目录补录进展**"), _markdown(summary)]
+    ordered = [*merged, *proposals]
+    links = list(dict.fromkeys(link for story in ordered for link in _story_sources(story)))
+    if links:
+        tail = f"等 {len(links)} 项" if len(links) > 6 else ""
+        elements.append(_markdown("来源：" + "、".join(links[:6]) + tail, "notation"))
+    people = list(dict.fromkeys(person for story in ordered for person in _story_people(story)))
+    if people:
+        elements.append(_markdown("参与：" + " / ".join(people[:2]), "notation"))
+    return elements
+
+
 def render_community(d: Digest, stories: list, report_date: str, *, status="quiet") -> dict | None:
     """Render a daily summary or its compact status card."""
     elements = []
+    papers = []
     for story in stories:
+        if story.get("paper_batch_member"):
+            papers.append(story)
+            continue
         copy = _story_copy(story)
         if copy is None:
             return None
@@ -388,6 +431,8 @@ def render_community(d: Digest, stories: list, report_date: str, *, status="quie
         if sources := _story_sources(story):
             section.append(_markdown("来源：" + "、".join(sources), "notation"))
         elements.append(_daily_column(section))
+    if papers:
+        elements.append(_daily_column(_paper_batch_elements(papers)))
 
     activity = bool(d.commit_count or d.merged_prs or d.opened_prs or d.issues)
     incomplete = bool(d.failed_repos or d.chronic_failures)
