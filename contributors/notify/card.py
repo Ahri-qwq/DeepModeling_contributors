@@ -445,8 +445,15 @@ def render_community(d: Digest, stories: list, report_date: str, *, status="quie
         if copy is None:
             return None
         title, text = copy
+        if note := story.get("context_note"):
+            if is_plain_story_text(note):
+                text = _escape(note).replace("*", "\\*") + text
+        stage = story["stage"]
+        branch = story.get("primary_pr", {}).get("base_branch")
+        if stage == "已合并" and isinstance(branch, str) and len(branch) <= 60 and is_plain_story_text(branch):
+            stage = "已合入 " + _escape(branch).replace("*", "\\*")
         sources = _story_sources(story)
-        details = _daily_story_details(story["stage"], _story_people(story), sources,
+        details = _daily_story_details(stage, _story_people(story), sources,
                                        story.get("source_count", len(sources)))
         section = [_markdown(title), _markdown(text), *details]
         elements.append(_daily_column(section))

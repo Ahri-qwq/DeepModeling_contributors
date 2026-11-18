@@ -545,20 +545,25 @@ class EventStore:
 
     def recent_community_topics(self, start: str, end: str) -> list:
         rows = self.conn.execute(
-            "SELECT c.window_start, c.stories FROM community_summaries c JOIN digests d ON d.id=c.digest_id "
+            "SELECT c.window_start, c.stories, d.payload FROM community_summaries c JOIN digests d ON d.id=c.digest_id "
             "WHERE c.window_start>=? AND c.window_start<? AND d.sent=1 ORDER BY c.window_start DESC, d.id DESC",
             (start, end),
         )
         seen = set()
         topics = []
         for row in rows:
+            title = json.loads(row["payload"]).get("card", {}).get("header", {}).get("title", {}).get("content", "")
+            report_date = next((part[:10] for part in title.split() if len(part) >= 10
+                                and part[:4].isdigit() and part[4:5] == "-" and part[7:8] == "-"), "")
             for story in json.loads(row["stories"]):
                 topic = story["topic"]
                 if topic in seen:
                     continue
                 seen.add(topic)
                 topics.append({"topic": topic, "title": story["title"], "stage": story["stage"],
-                               "counts": story.get("resource_counts"), "reported_for": row["window_start"]})
+                               "counts": story.get("resource_counts"), "reported_for": row["window_start"],
+                               "report_date": report_date, "text": story.get("text", ""),
+                               "sources": story.get("sources", []), "source_facts": story.get("source_facts", {})})
         return topics
 
     def tracked_report_repos(self, start: str, end: str) -> set:
