@@ -7,6 +7,7 @@ import json
 import os
 import re
 import unicodedata
+from urllib.parse import quote
 from datetime import date
 from html import unescape
 
@@ -304,8 +305,12 @@ def _story_copy(story: dict) -> tuple[str, str] | None:
 
 
 def _story_people(story: dict) -> list[str]:
-    return [f"[@{person['login']}](https://github.com/{person['login']}) {person['role']}"
-            for person in story["people"]]
+    people = []
+    for person in story["people"]:
+        login = person["login"]
+        account_path = "apps/" + quote(login[:-5], safe="") if login.endswith("[bot]") else quote(login, safe="")
+        people.append(f"[@{_escape(login)}](https://github.com/{account_path}) {person['role']}")
+    return people
 
 
 def _story_sources(story: dict) -> list[str]:

@@ -21,7 +21,7 @@ from . import daily_context
 
 
 LOG = logging.getLogger(__name__)
-VERSION = 10
+VERSION = 11
 MAX_CANDIDATES = 10
 MAX_CURRENT = 100
 MAX_HISTORY = 60
@@ -42,7 +42,7 @@ BLOG_MILESTONE = re.compile(
     r"\b(?:announcement|release|security advisory|call for|registration|workshop|webinar|tutorial|dataset)\b|公告|正式发布|发布说明|活动报名|安全通告|教程|数据集", re.I,
 )
 GITHUB_NAME = re.compile(r"[A-Za-z0-9_.-]+")
-LOGIN = re.compile(r"[A-Za-z0-9-]+")
+LOGIN = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")
 ISSUE_REFERENCE = re.compile(
     r"\b(?:clos(?:e|es|ed)|fix(?:es|ed)?|resolv(?:e|es|ed))\s*:?\s+"
     r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[1-9]\d*)\b", re.I,
@@ -163,7 +163,7 @@ def _safe_sources(records, org, public):
         if (source["url"] or "").rstrip("/").casefold() != canonical.casefold():
             continue
         author = source["author"] or ""
-        if not LOGIN.fullmatch(author) or is_bot(author) or is_ai_assistant(author):
+        if not LOGIN.fullmatch(author):
             author = ""
         safe[key] = {**source, "url": canonical, "author": author}
     return safe
@@ -374,6 +374,8 @@ def _story_people(records, refs, max_people=2):
         if not (login := source["author"]):
             continue
         role = {"pr": "提交改动", "issue": "提出问题或建议", "release": "发布版本"}[source["kind"]]
+        if is_bot(login) or is_ai_assistant(login):
+            role = "自动账号" + role
         person = people.setdefault(login.casefold(), (login, []))
         if role not in person[1]:
             person[1].append(role)
@@ -534,10 +536,9 @@ def verified_short_stories(records, limit=2):
             continue
         if not is_plain_story_text(title):
             continue
-        role = "发布版本" if row["kind"] == "release" else "提交改动"
         stories.append({"repo": row["repo"], "title": title, "text": text, "stage": row["stage"],
                         "topic": row.get("resource_topic") or ref, "resource_counts": counts,
-                        "people": [{"login": row["author"], "role": role}] if row["author"] else [],
+                        "people": _story_people(records, [ref]),
                         "sources": [{"label": ref, "url": row["url"]}], "verified_fallback": True})
     unique = {}
     for story in sorted(stories, key=lambda story: story["topic"].startswith("papers/")):
@@ -568,7 +569,7 @@ def _paper_batch(papers, org, end, token):
         stories.append({
             "repo": row["repo"], "topic": row["resource_topic"],
             "title": f"{project_name}{scope}", "text": text, "stage": row["stage"],
-            "people": [{"login": row["author"], "role": "提交改动"}] if row["author"] else [],
+            "people": _story_people(papers, [row["id"]]),
             "resource_counts": counts, "sources": [{"label": row["id"], "url": row["url"]}],
             "paper_batch_member": True,
         })

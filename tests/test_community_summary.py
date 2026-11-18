@@ -25,6 +25,42 @@ def _pr(repo, number, title, author="Ahri-qwq"):
                  "2026-11-10T01:00:00Z", "open")
 
 
+@pytest.mark.parametrize("login, role, account_path", [
+    ("njzjz-bot", "自动账号提交改动", "njzjz-bot"),
+    ("dependabot[bot]", "自动账号提交改动", "apps/dependabot"),
+    ("copilot-swe-agent[bot]", "自动账号提交改动", "apps/copilot-swe-agent"),
+    ("botelho", "提交改动", "botelho"),
+])
+def test_story_retains_actual_human_or_automatic_author(login, role, account_path):
+    pending = UpsertResult([_pr("deepmd-kit", 5834, "fix: exclude virtual atoms", login)], [])
+    records = community._safe_sources(community._event_records(pending, True), "deepmodeling", {"deepmd-kit"})
+    output = {"items": [{"title": "修正邻居统计", "text": "提案修正虚拟原子的统计。",
+                         "refs": ["deepmd-kit#5834"], "stage_source": "deepmd-kit#5834"}]}
+    stories = community._items(output, records)
+    assert stories[0]["people"] == [{"login": login, "role": role}]
+    body = daily_card_text(card.render_community(digest.build(pending), stories, "2026-11-18"))
+    assert f"https://github.com/{account_path}" in body and role in body
+    assert f"[@{card._escape(login)}]" in body
+    from contributors.notify import period
+    period_digest = period.build_period(pending.new_events, "上周", "范围", people_only=True)
+    assert period_digest.contributor_total == (1 if login == "botelho" else 0)
+
+
+def test_invalid_author_cannot_introduce_a_link():
+    records = community._event_records(UpsertResult([_pr("deepmd-kit", 5834, "Fix", "x](https://evil.example)")], []), True)
+    safe = community._safe_sources(records, "deepmodeling", {"deepmd-kit"})
+    assert safe["deepmd-kit#5834"]["author"] == ""
+
+
+def test_verified_short_story_keeps_automatic_author():
+    ref = "example@v1"
+    records = {ref: {"id": ref, "current": True, "kind": "release", "title": "v1.0", "repo": "example",
+                     "stage": "已正式发布", "url": "https://github.com/deepmodeling/example/releases/tag/v1.0",
+                     "author": "github-actions[bot]"}}
+    story, = community.verified_short_stories(records)
+    assert story["people"] == [{"login": "github-actions[bot]", "role": "自动账号发布版本"}]
+
+
 def test_public_resource_reaches_editor_when_shortlist_misses_it(monkeypatch):
     current = community._event_records(UpsertResult([
         _pr("blog", 378, "papers(deepmd-kit): 补入 2025 年 53 篇论文"),
