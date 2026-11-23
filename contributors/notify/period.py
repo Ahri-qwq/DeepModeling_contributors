@@ -247,7 +247,12 @@ def render_community(d: PeriodDigest, summary, *, monthly: bool) -> dict:
     if body:
         lines.extend(body)
     elif summary.unavailable or body is None:
-        lines.append("摘要暂未生成。")
+        counts = "、".join(
+            f"{count} {label}" for count, label in (
+                (d.opened_count, "项新提案"), (d.merged_count, "项已合并改动"),
+                (d.issue_count, "条问题或建议"), (d.commit_count, "次代码提交"),
+                (d.release_count, "次版本发布")) if count)
+        lines.append("本期活动统计：" + counts + "。" if counts else "本期暂无新增活动。")
     elif not d.is_empty:
         lines.append("本期有公开活动，暂无可概括的进展。")
     else:

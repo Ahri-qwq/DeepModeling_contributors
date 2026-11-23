@@ -382,55 +382,55 @@ def test_transient_errors_retry_twice_then_return_to_original_card(retry_clock):
     responses.add(responses.POST, community.DEEPSEEK_API, status=500)
     with pytest.raises(requests.HTTPError):
         _request_model()
-    assert retry_clock == [5, 15]
+    assert retry_clock == [15, 30]
     assert len(responses.calls) == 3
 
 
 @responses.activate
-def test_rate_limit_retries_after_server_delay_when_budget_allows(retry_clock):
+def test_rate_limit_observes_minimum_retry_delay(retry_clock):
     responses.add(responses.POST, community.DEEPSEEK_API, status=429, headers={"Retry-After": "8"})
     responses.add(responses.POST, community.DEEPSEEK_API, json=_reply({"items": []}))
     assert _request_model() == {"items": []}
-    assert retry_clock == [8]
+    assert retry_clock == [15]
 
 
 @responses.activate
-def test_rate_limit_does_not_wait_past_deadline(retry_clock):
+def test_rate_limit_completes_three_attempts_despite_old_deadline(retry_clock):
     responses.add(responses.POST, community.DEEPSEEK_API, status=429, headers={"Retry-After": "120"})
-    with pytest.raises(TimeoutError, match="retry budget"):
+    with pytest.raises(requests.HTTPError):
         _request_model()
-    assert retry_clock == []
-    assert len(responses.calls) == 1
+    assert retry_clock == [120, 120]
+    assert len(responses.calls) == 3
 
 
 @responses.activate
-def test_auth_failure_is_not_retried(retry_clock):
+def test_auth_failure_also_gets_three_attempts(retry_clock):
     responses.add(responses.POST, community.DEEPSEEK_API, status=401)
     with pytest.raises(requests.HTTPError):
         _request_model()
-    assert retry_clock == []
-    assert len(responses.calls) == 1
+    assert retry_clock == [15, 30]
+    assert len(responses.calls) == 3
 
 
 @responses.activate
-def test_invalid_evidence_gets_one_immediate_rewrite(retry_clock):
+def test_invalid_evidence_waits_before_corrected_output(retry_clock):
     records = {"blog#378": {"current": True}}
     responses.add(responses.POST, community.DEEPSEEK_API, json=_reply({"candidates": [{"refs": ["invented"]}]}))
     responses.add(responses.POST, community.DEEPSEEK_API, json=_reply({"candidates": [{"refs": ["blog#378"]}]}))
     assert _request_model(lambda value: community._selected_refs(value, records)) == ["blog#378"]
-    assert retry_clock == []
+    assert retry_clock == [15]
     second_request = json.loads(responses.calls[1].request.body)
-    assert "未通过校验" in second_request["messages"][-1]["content"]
+    assert "校验" in second_request["messages"][-1]["content"]
 
 
 @responses.activate
-def test_repeated_invalid_output_falls_back_without_a_third_rewrite(retry_clock):
+def test_repeated_invalid_output_gets_all_three_attempts(retry_clock):
     responses.add(responses.POST, community.DEEPSEEK_API, json=_reply({"wrong": []}))
     responses.add(responses.POST, community.DEEPSEEK_API, json=_reply({"wrong": []}))
     with pytest.raises(KeyError):
         _request_model(lambda value: value["items"])
-    assert len(responses.calls) == 2
-    assert retry_clock == []
+    assert len(responses.calls) == 3
+    assert retry_clock == [15, 30]
 
 
 @pytest.mark.parametrize("empty_phase", ["selection", "writing"])

@@ -481,8 +481,7 @@ def render_community(d: Digest, stories: list, report_date: str, *, status="quie
                       (d.issue_count, "条问题或建议"), (d.commit_count, "次代码提交"))
             overview = "、".join(f"{count} {label}" for count, label in counts if count)
             elements.append(_markdown(f"{'已覆盖范围内' if incomplete else '本期'}记录到 {overview}。"))
-            if status == "unavailable":
-                elements.append(_markdown("摘要暂未生成。"))
+            # Statistics-only fallback deliberately carries no summary error wording.
 
     payload = _daily_payload(d, [*elements, *appendix], report_date, stats)
     return payload if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= SIZE_LIMIT else None

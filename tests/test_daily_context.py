@@ -113,7 +113,7 @@ def test_sent_history_keeps_text_sources_and_date_with_legacy_rows(tmp_path):
         assert saved["report_date"] == "2026-11-13" and saved["source_facts"] == {}
 
 
-def test_drafting_budget_starts_after_github_relationship_checks(monkeypatch):
+def test_drafting_has_no_total_deadline_after_github_relationship_checks(monkeypatch):
     clock = [0]
     monkeypatch.setattr(community.time, "monotonic", lambda: clock[0])
     row = source(1, "dev", current=True)
@@ -122,7 +122,7 @@ def test_drafting_budget_starts_after_github_relationship_checks(monkeypatch):
     def model(*args, thinking, deadline, validate):
         if not thinking:
             return validate({"candidates": [{"refs": [row["id"]]}]})
-        assert deadline - clock[0] == community.MODEL_BUDGET_SECONDS
+        assert deadline is None
         return validate({"items": [{"title": "修正导出流程", "text": "改动已合并。",
                                     "refs": [row["id"]], "stage_source": row["id"]}]})
 

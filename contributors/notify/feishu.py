@@ -78,7 +78,7 @@ def mask(url: str) -> str:
 
 
 def send(payload: dict, url: Optional[str] = None,
-         secret: Optional[str] = None, session=None) -> None:
+         secret: Optional[str] = None, session=None, attempts=None) -> None:
     """发一条消息。失败抛 FeishuError。
 
     调用方负责捕获 —— 推送失败不该影响统计的退出码。
@@ -98,12 +98,13 @@ def send(payload: dict, url: Optional[str] = None,
     http = session or requests
     last_exc = None
 
-    for attempt in range(RETRIES):
+    tries = RETRIES if attempts is None else attempts
+    for attempt in range(tries):
         try:
             resp = http.post(url, json=body, timeout=TIMEOUT)
         except Exception as exc:                      # 网络层：重试
             last_exc = exc
-            if attempt < RETRIES - 1:
+            if attempt < tries - 1:
                 wait = BACKOFF * (2 ** attempt)
                 log.warning("推送到 %s 失败（%s），%.0f 秒后重试",
                             mask(url), exc, wait)
@@ -125,4 +126,4 @@ def send(payload: dict, url: Optional[str] = None,
         raise FeishuError(
             f"飞书返回 code={code} msg={msg}" + (f"（{hint}）" if hint else ""))
 
-    raise FeishuError(f"推送到 {mask(url)} 失败，已重试 {RETRIES} 次：{last_exc}")
+    raise FeishuError(f"推送到 {mask(url)} 失败，共尝试 {tries} 次：{type(last_exc).__name__}")

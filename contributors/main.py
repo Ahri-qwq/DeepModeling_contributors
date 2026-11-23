@@ -24,7 +24,7 @@ from .git_stats import (
 )
 from .identity import IdentityResolver, is_ai_assistant, is_bot, is_marked_bot
 from .models import ApiStats
-from .notify import card, community, digest, feishu, period, period_summary
+from .notify import card, community, delivery, digest, feishu, period, period_summary
 from .output import (
     SUM_FIELDS, LINE_CAVEAT, Row, summarize, write_csv, write_json,
     write_markdown,
@@ -589,6 +589,8 @@ def _notify_period(cfg) -> int:
     更没有"数据失败"可言，故一律返回 0。
     """
     monthly = getattr(cfg, "monthly", False)
+    if not cfg.notify_dry_run and not delivery.start('monthly' if monthly else 'weekly', _report_date(cfg).isoformat()):
+        return 0
     label = "上月" if monthly else "上周"
     reference = getattr(cfg, "date", None)
     anchor = datetime.fromisoformat(reference).replace(tzinfo=period.CST) if reference else None
@@ -601,6 +603,11 @@ def _notify_period(cfg) -> int:
         feishu.load_env()
         optimized = community.enabled()
         summary = period_summary.summarize(store, events, cfg.org, start, end, monthly) if optimized else None
+        if summary is not None and not cfg.notify_dry_run and delivery.defer(summary.unavailable):
+            return 0
+        if summary is not None and delivery.failed():
+            summary.stories = []
+            summary.unavailable = True
         top_n = period.TOP_N_WEEKLY if optimized or not monthly else period.TOP_N_MONTHLY
         report_events = summary.events if summary is not None else events
         d = period.build_period(report_events, label, period.range_text(start, end),
@@ -610,6 +617,7 @@ def _notify_period(cfg) -> int:
 
         needs_notice = summary and (summary.stories or summary.missing or summary.incomplete or summary.unavailable)
         if d.is_empty and not cfg.notify_empty and not needs_notice:
+            delivery.complete()
             print(f"{label}无活动，跳过推送（--notify-empty 可改变）")
             return 0
 
@@ -621,7 +629,7 @@ def _notify_period(cfg) -> int:
         # 周月报不参与日报的增量基线：它只是换个视角看同一批事件，
         # 推送与否不该影响"上次成功推送"，否则会打乱日报的增量判定。
         try:
-            feishu.send(payload)
+            delivery.send(payload)
             print(f"已推送{label}报到飞书群")
         except feishu.FeishuError as exc:
             print(f"注意：{label}报推送失败（{exc}）")
@@ -648,7 +656,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
                 return
             feishu.load_env()
             try:
-                feishu.send(payload)
+                delivery.send(payload)
                 print("已重发最近一份战报")
             except feishu.FeishuError as exc:
                 print(f"注意：重发失败（{exc}）")
@@ -692,6 +700,8 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 
         # 报告日既是标题日期，也是入库窗口的结束日。补推用同一个 --date。
         report_day = _report_date(cfg)
+        if not cfg.notify_dry_run and not delivery.start('daily', report_day.isoformat()):
+            return
         win_start, win_end = period.daily_range(report_day)
         pending = store.pending_in_window(win_start, win_end)
         totals = _year_totals(rows)
@@ -731,6 +741,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
 
         if d.is_empty and not cfg.notify_empty and not (d.failed_repos or d.chronic_failures):
             # 每天推一条"今天没有新增"会很快让人把机器人静音
+            delivery.complete()
             print("无新增内容，跳过推送（--notify-empty 可改变）")
             return
 
@@ -740,6 +751,10 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
         # 还没读进环境变量，服务器干净环境下按钮永不渲染。
         feishu.load_env()
         summary, summary_key = community.daily_summary(store, pending, cfg.org, win_start, win_end)
+        if not cfg.notify_dry_run and delivery.defer(summary is community.UNAVAILABLE):
+            return
+        if delivery.failed():
+            summary, summary_key = community.UNAVAILABLE, None
         optimized = None
         if community.enabled():
             report_date = report_day.isoformat()
@@ -763,7 +778,7 @@ def _record_and_notify(events, meta, cfg, repos_processed: int,
             except sqlite3.Error:
                 print("注意：社区动向存档关联失败，继续推送日报")
         try:
-            feishu.send(payload)
+            delivery.send(payload)
             store.mark_notified(run_id, True)
             store.mark_digest_sent(digest_id, True)
             print("已推送到飞书群")

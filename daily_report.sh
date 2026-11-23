@@ -31,6 +31,8 @@
 # 生产定时任务（北京时间，由 ubuntu 用户的 crontab 触发）：
 #   02:00  daily_report.sh --fetch，抓取成功后同步多维表格
 #   10:01  daily_report.sh --push，标题使用报告日
+#   10:06  周一 --weekly；10:11 每月 1 日 --monthly
+#   11:01 / 11:06 / 11:11：相同周期的第二轮，REPORT_ROUND=2
 #   11:00  backup_data.sh
 #
 # 自 2026-11-13 的日报起，取前一天 06:00 到报告日 06:00 之间的入库增量。
@@ -78,6 +80,20 @@ LOG="logs/daily-${TODAY}.log"
 STATUS="logs/last-fetch-status.txt"
 
 ACTION="${1:---daily}"
+export REPORT_ROUND="${REPORT_ROUND:-1}"
+# Serialize the same report kind; a slow daily must not suppress the weekly job.
+if [ "$ACTION" != "--fetch" ] && [ "$ACTION" != "--dry" ]; then
+    case "$ACTION" in
+        --weekly) REPORT_KIND=weekly ;;
+        --monthly) REPORT_KIND=monthly ;;
+        *) REPORT_KIND=daily ;;
+    esac
+    exec 9>"logs/report-${REPORT_KIND}.lock"
+    if ! flock -n 9; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${REPORT_KIND} round=${REPORT_ROUND} skipped: already running" >> "$LOG"
+        exit 0
+    fi
+fi
 
 log() {
     echo "$1" >> "$LOG"

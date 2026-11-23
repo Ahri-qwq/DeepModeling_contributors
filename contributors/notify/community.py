@@ -28,9 +28,7 @@ MAX_HISTORY = 60
 DEFAULT_MODEL = "deepseek-flash"
 GITHUB_API = "https://api.github.com"
 DEEPSEEK_API = "https://api.deepseek.com/chat/completions"
-MODEL_BUDGET_SECONDS = 90
-MODEL_RETRY_DELAYS = (5, 15)
-RETRYABLE_MODEL_STATUS = {408, 429, 500, 502, 503, 504}
+MODEL_RETRY_DELAYS = (15, 30)
 RESOURCE = re.compile(
     r"\b(?:papers?|tutorials?|datasets?|examples?|website|docs?|changelog)\b|官网|论文|教程|数据集|文档|示例", re.I,
 )
@@ -274,7 +272,8 @@ def _retry_after(response):
     return 0
 
 
-def _model_json(api_key, model, prompt, data, *, thinking, deadline, validate, thinking_tokens=6500):
+def _model_json(api_key, model, prompt, data, *, thinking, validate, deadline=None, thinking_tokens=6500):
+    # Retain the old keyword for callers, but never truncate attempts by a total deadline.
     params = {
         "model": model,
         "messages": [
@@ -287,44 +286,50 @@ def _model_json(api_key, model, prompt, data, *, thinking, deadline, validate, t
     }
     if thinking:
         params["reasoning_effort"] = "low"
-    corrected = False
-    for retry_delay in (*MODEL_RETRY_DELAYS, None):
-        remaining = deadline - time.monotonic()
-        if remaining <= 4:
-            raise TimeoutError("DeepSeek retry budget exhausted")
-        connect = min(4, remaining / 3)
+    from . import delivery
+    stage_key, pinned, cached = delivery.model_stage(prompt, data)
+    params["messages"][1]["content"] = json.dumps(pinned, ensure_ascii=False)
+    if cached is not None:
+        return validate(cached)
+    for local_attempt in range(1, 4):
+        attempt = delivery.model_attempt(stage_key) if stage_key else local_attempt
+        if not attempt:
+            delivery.model_failure()
+            raise RuntimeError('Model attempts exhausted for this round')
+        started = time.monotonic()
+        LOG.warning("%s stage=%s attempt=%s/3 start", delivery.context(),
+                    "write" if thinking else "select", attempt)
         try:
             response = requests.post(
                 DEEPSEEK_API, json=params, headers={"Authorization": f"Bearer {api_key}"},
-                timeout=(connect, min(30, remaining - connect)),
+                timeout=(10, 60),
             )
             response.raise_for_status()
-            if time.monotonic() >= deadline:
-                raise TimeoutError("DeepSeek retry budget exhausted")
             choice = response.json()["choices"][0]
             if choice["finish_reason"] != "stop":
                 raise ValueError("DeepSeek response did not finish")
             value = json.loads(choice["message"]["content"])
             if not isinstance(value, dict):
                 raise ValueError("DeepSeek response is not an object")
-            return validate(value)
-        except requests.HTTPError as exc:
-            if retry_delay is None or exc.response is None or exc.response.status_code not in RETRYABLE_MODEL_STATUS:
+            result = validate(value)
+            delivery.model_success(stage_key, value)
+            LOG.warning("%s stage=%s attempt=%s success elapsed=%.1fs", delivery.context(),
+                        "write" if thinking else "select", attempt, time.monotonic()-started)
+            return result
+        except (requests.RequestException, ValueError, KeyError, TypeError, IndexError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            LOG.warning("%s stage=%s attempt=%s error=%s status=%s elapsed=%.1fs",
+                        delivery.context(), "write" if thinking else "select", attempt,
+                        type(exc).__name__, status, time.monotonic()-started)
+            if attempt == 3:
+                delivery.model_failure()
                 raise
-            delay = max(retry_delay, _retry_after(exc.response))
-        except (requests.Timeout, requests.ConnectionError):
-            if retry_delay is None:
-                raise
-            delay = retry_delay
-        except (ValueError, KeyError, TypeError, IndexError):
-            if retry_delay is None or corrected:
-                raise
-            corrected = True
-            params["messages"].append({"role": "user", "content": "上一份结果未通过校验。请重新返回完整 JSON，检查来源、条数和阶段。每项必须引用本期新事实，历史记录只能作为前情。"})
-            delay = 0
-        if delay + 4 >= deadline - time.monotonic():
-            raise TimeoutError("DeepSeek retry budget exhausted")
-        if delay:
+            delay = MODEL_RETRY_DELAYS[attempt-1]
+            if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                delay = max(delay, _retry_after(exc.response))
+            if isinstance(exc, (ValueError, KeyError, TypeError, IndexError)):
+                params["messages"].append({"role": "user", "content": "请重新返回通过来源、条数和阶段校验的完整 JSON。"})
+            LOG.warning("%s retry_in=%ss", delivery.context(), delay)
             time.sleep(delay)
 
 
@@ -625,14 +630,15 @@ def _generate_stories(today, recent, safe_today, prior, org, start, end, api_key
         return [] if scope_complete and len(current_ids) == len(today) else None
     base = {"window_start": start.isoformat(), "window_end": end.isoformat(),
             "previously_reported": prior, "max_items": limit, "max_sources": DAILY_MAX_SOURCES}
-    deadline = time.monotonic() + MODEL_BUDGET_SECONDS
+    from . import delivery
+    records, base = delivery.snapshot('daily-selection', [records, base])
     current_refs = [ref for ref, row in records.items() if row["current"]]
     ordered_records = sorted(records.values(), key=lambda row: not row["current"])
     try:
         refs = _model_json(
             api_key, model, SELECT_PROMPT,
             {**base, "current_source_ids": current_refs, "records": _model_records(ordered_records)},
-            thinking=False, deadline=deadline,
+            thinking=False, deadline=None,
             validate=lambda output: _selected_refs(output, records, DAILY_MAX_SOURCES),
         )
     except Exception as exc:
@@ -676,15 +682,14 @@ def _generate_stories(today, recent, safe_today, prior, org, start, end, api_key
     _enrich_refs(records, [ref for ref in context_refs if "description" not in records[ref]], org, end, token)
     evidence.update({ref: records[ref] for ref in context_refs})
     daily_context.branch_context(evidence, reported, lambda path: _get_json(path, token))
-    # Branch/commit verification performs GitHub reads after selection. Give
-    # drafting its own retry budget after this evidence preparation completes.
-    deadline = time.monotonic() + MODEL_BUDGET_SECONDS
+    evidence, groups = delivery.snapshot('daily-writing', [evidence, groups])
+    # Drafting has three independent attempts after evidence preparation.
     try:
         stories = _model_json(
             api_key, model, WRITE_PROMPT,
             {**base, "current_source_ids": [ref for ref, row in evidence.items() if row["current"]],
              "records": _model_records(evidence.values()), "linked_issue_groups": groups},
-            thinking=True, deadline=deadline,
+            thinking=True, deadline=None,
             validate=lambda output: _validated_items(output, evidence, limit,
                                                     max_sources=DAILY_MAX_SOURCES, max_people=None),
         )
@@ -720,6 +725,9 @@ def daily_summary(store, pending, org, win_start, win_end):
         recent = _event_records(store.pending_in_window(history_start, win_start), False)
         prior = store.recent_community_topics(history_start, win_start)
         stories = _generate(current, recent, prior, org, start, end, api_key, model)
+        from . import delivery
+        if delivery.failed():
+            return UNAVAILABLE, None
         if stories is None:
             LOG.info("本期未生成可用动向")
             return NO_RESULTS

@@ -97,7 +97,7 @@ def test_period_push_preview_uses_anchor_and_two_links(tmp_path, monkeypatch, ca
     payload = json.loads(output[output.index('{\n  "msg_type"'):])
     body = payload["card"]["elements"][0]["text"]["content"]
     assert "共 1 位贡献者参与" in body and "dependabot" not in body
-    assert "摘要暂未生成" in body
+    assert "摘要暂未生成" not in body
     assert "https://example.com/dashboard" in body and "https://example.com/contributors" in body
 
 

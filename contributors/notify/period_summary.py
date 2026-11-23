@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -177,28 +176,29 @@ def _stats_events(events, current, public):
     return list(result.values())
 
 
-def _select_batch(rows, history, api_key, model, base, deadline):
+def _select_batch(rows, history, api_key, model, base):
     repos = {row["repo"] for row in rows}
     selected = {row["id"]: row for row in rows}
     selected.update({ref: row for ref, row in history.items() if row["repo"] in repos})
     brief = [{**row, "description": community._compact(row.get("description"), 220)} for row in selected.values()]
     return community._model_json(api_key, model, SELECT, {**base, "records": community._model_records(brief)},
-                                 thinking=False, deadline=deadline,
+                                 thinking=False, deadline=None,
                                  validate=lambda output: community._selected_refs(output, selected))
 
 
 def _summarize(current, history, api_key, model, start, end, monthly, prior):
+    from . import delivery
+    current, history, prior = delivery.snapshot('period-evidence', [current, history, prior])
     items = sorted((row for row in current.values() if not community._routine_title(row)),
                    key=lambda row: (row["repo"].casefold(), row.get("created_at") or ""))
     if not items:
         return []
     limit = 6 if monthly else 5
-    deadline = time.monotonic() + 150
     base = {"kind": "monthly" if monthly else "weekly", "start": start.isoformat(), "end_exclusive": end.isoformat(),
             "max_items": limit, "related_reports": prior}
     batches = [items[index:index + BATCH_SIZE] for index in range(0, len(items), BATCH_SIZE)]
     with ThreadPoolExecutor(max_workers=3) as pool:
-        selected = list(pool.map(lambda rows: _select_batch(rows, history, api_key, model, base, deadline), batches))
+        selected = list(pool.map(lambda rows: _select_batch(rows, history, api_key, model, base), batches))
     priority = [ref for ref, row in current.items()
                 if row["kind"] == "release" or (row.get("resource_counts") or {}).get("net_change", 0) > 0]
     refs = list(dict.fromkeys([*priority, *(ref for batch in selected for ref in batch)]))
@@ -207,7 +207,7 @@ def _summarize(current, history, api_key, model, start, end, monthly, prior):
     evidence = {ref: (current | history)[ref] for ref in refs}
     stories = community._model_json(api_key, model, WRITE,
                                     {**base, "records": community._model_records(evidence.values())},
-                                    thinking=True, deadline=deadline,
+                                    thinking=True, deadline=None,
                                     validate=lambda output: community._validated_items(output, evidence, limit))
     resources = {ref: row for ref, row in current.items() if row.get("resource_topic")}
     milestones = community.verified_short_stories(resources, limit=1)
@@ -256,7 +256,8 @@ def summarize(store, events, org, start_text, end_text, monthly):
             if not key:
                 raise ValueError("DeepSeek configuration missing")
             result.stories = _summarize(current, history, key, model, start, end, monthly, prior)
-            if result.stories and not result.missing:
+            from . import delivery
+            if result.stories and not result.missing and not delivery.failed():
                 store.save_community_summary(window, cache_key, result.stories)
     except Exception as exc:
         LOG.warning("周期报告摘要暂未生成 (%s)", type(exc).__name__)
