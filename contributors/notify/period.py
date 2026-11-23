@@ -265,7 +265,8 @@ def render_community(d: PeriodDigest, summary, *, monthly: bool) -> dict:
     footer.extend(report_links())
     payload = _payload(title, "\n".join([*lines, "", *footer]))
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > SIZE_LIMIT:
-        return _payload(title, "\n".join(["本期活动已记录。", *footer]))
+        payload = _payload(title, "\n".join(["本期活动已记录。", *footer]))
+    payload["card"]["header"]["template"] = "turquoise"
     return payload
 
 
